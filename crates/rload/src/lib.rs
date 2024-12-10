@@ -7,6 +7,7 @@ cfg_if::cfg_if! {
 pub mod cli;
 pub mod args;
 pub mod io;
+pub mod fmt;
 #[cfg(feature = "h1")]
 pub mod h1;
 #[cfg(feature = "h2")]

@@ -2,8 +2,6 @@
 use anyhow::Context;
 use clap::Parser;
 use human_bytes::human_bytes;
-#[cfg(feature = "latency")]
-use humantime::FormattedDuration;
 use near_safe_cell::NearSafeCell;
 use tokio_util::sync::CancellationToken;
 use std::{net::SocketAddr, thread, time::Duration};
@@ -11,8 +9,7 @@ use tokio::time::Instant;
 use url::Url;
 
 use crate::{
-  args::{Args, Request, RunConfig},
-  io::CounterStream,
+  args::{Args, Request, RunConfig}, io::CounterStream
 };
 
 #[derive(Debug, Clone)]
@@ -55,16 +52,16 @@ impl std::fmt::Display for Report {
 
     writeln!(f, "threads:      {}", self.threads)?;
     writeln!(f, "concurrency:  {}", self.concurrency)?;
-    writeln!(f, "duration:     {}", humantime::format_duration(self.duration))?; 
+    writeln!(f, "duration:     {}", crate::fmt::format_duration(self.duration))?; 
 
     #[cfg(feature = "latency")]
     {
-      fn t(nanos: u64) -> FormattedDuration {
-        humantime::format_duration(Duration::from_nanos(nanos))
+      fn t(nanos: u64) -> crate::fmt::FormatDuration {
+        crate::fmt::format_duration(Duration::from_nanos(nanos))
       }
 
-      fn tf(nanos: f64) -> FormattedDuration {
-        humantime::format_duration(Duration::from_nanos(nanos.round() as u64))
+      fn tf(nanos: f64) -> crate::fmt::FormatDuration {
+        crate::fmt::format_duration(Duration::from_nanos(nanos.round() as u64))
       }
 
 
@@ -97,7 +94,7 @@ impl std::fmt::Display for Report {
 
     writeln!(f)?;
     writeln!(f, "==========| Result |=========")?;
-    writeln!(f, "elapsed:      {}", humantime::format_duration(self.elapsed))?;
+    writeln!(f, "elapsed:      {}", crate::fmt::format_duration(self.elapsed))?;
     writeln!(f, "requests:     {}", self.ok)?;
     writeln!(f, "errors:       {}", self.err)?;
     writeln!(
