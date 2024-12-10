@@ -12,6 +12,7 @@ fn client_config(alpn: Vec<Vec<u8>>) -> rustls::ClientConfig {
   config
 }
 
+#[cfg(feature = "h1")]
 pub fn h1_client_config() -> rustls::ClientConfig {
   client_config(vec! [
     b"http/1.1".to_vec(),
@@ -19,6 +20,7 @@ pub fn h1_client_config() -> rustls::ClientConfig {
   ])
 }
 
+#[cfg(feature = "h2")]
 pub fn h2_client_config() -> rustls::ClientConfig {
   client_config(vec! [ b"h2".to_vec() ])
 }
@@ -28,6 +30,7 @@ pub fn h2_client_config() -> rustls::ClientConfig {
 pub struct DangerNoCertVerification {}
 
 impl rustls::client::danger::ServerCertVerifier for DangerNoCertVerification {
+  #[inline(always)]
   fn verify_server_cert(
     &self,
     _end_entity: &rustls::pki_types::CertificateDer<'_>,
@@ -39,6 +42,7 @@ impl rustls::client::danger::ServerCertVerifier for DangerNoCertVerification {
     Ok(rustls::client::danger::ServerCertVerified::assertion())
   }
 
+  #[inline(always)]
   fn verify_tls12_signature(
     &self,
     _message: &[u8],
@@ -48,6 +52,7 @@ impl rustls::client::danger::ServerCertVerifier for DangerNoCertVerification {
     Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
   }
 
+  #[inline(always)]
   fn verify_tls13_signature(
     &self,
     _message: &[u8],
@@ -57,6 +62,7 @@ impl rustls::client::danger::ServerCertVerifier for DangerNoCertVerification {
     Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
   }
 
+  #[inline(always)]
   fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
     vec![
       SignatureScheme::RSA_PKCS1_SHA1,

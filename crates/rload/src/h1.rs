@@ -10,20 +10,18 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   stream: &mut S,
   req_buf: &[u8],
   keepalive: bool,
-) -> Result<(bool, (u64, u64)), (u64, u64)> {
+) -> Result<bool, ()> {
   match stream.write_all(req_buf).await {
     Ok(()) => {}
-    Err(_) => return Err((0, 0)),
+    Err(_) => return Err(()),
   };
-
-  let write = req_buf.len() as u64;
 
   let mut res_buf = [0u8; 128];
   let mut read: u64 = 0;
 
   'read: loop {
     match stream.read(&mut res_buf[(read as usize)..]).await {
-      Ok(0) => return Err((read, write)),
+      Ok(0) => return Err(()),
       Ok(new_n) => {
         read += new_n as u64;
         let mut headers = [httparse::EMPTY_HEADER; 16];
@@ -72,12 +70,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 
                   let str = match std::str::from_utf8(h.value) {
                     Ok(str) => str,
-                    Err(_) => return Err((read, write)),
+                    Err(_) => return Err(()),
                   };
 
                   let len = match str.parse::<u64>() {
                     Ok(v) => v,
-                    Err(_) => return Err((read, write)),
+                    Err(_) => return Err(()),
                   };
 
                   break 'content_length Some(len);
@@ -92,12 +90,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   let to_read = (len + head_n as u64).saturating_sub(read);
 
                   if to_read == 0 {
-                    return Ok((is_keepalive, (read, write)));
+                    return Ok(is_keepalive);
                   }
     
                   match read_and_dispose(stream, to_read).await {
-                    Ok(n) => return Ok((is_keepalive, (read + n, write))),
-                    Err((n, _)) => return Err((read + n, write))
+                    Ok(()) => return Ok(is_keepalive),
+                    Err(_) => return Err(())
                   }
                 }
 
@@ -119,16 +117,16 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   if is_chunked {
 
                     match consume_chunked_body(stream, &res_buf[head_n..read as usize]).await {
-                      Ok(n) => return Ok((is_keepalive, (read + n, write))),
-                      Err((n, _)) => return Err((read + n, write))
+                      Ok(()) => return Ok(is_keepalive),
+                      Err(_) => return Err(())
                     }
 
                   // no chunked encoding nor content-length, consume the response until the end and 
                   // dispose the connection, as in curl
                   } else {
                     match read_to_end(stream).await {
-                      Ok(n) => return Ok((false, (read + n, write))),
-                      Err((n, _)) => return Err((read + n, write))
+                      Ok(()) => return Ok(false),
+                      Err(_) => return Err(())
                     }
                   }
                 }
@@ -140,11 +138,11 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
             }
           },
 
-          Err(_) => return Err((read, write)),
+          Err(_) => return Err(()),
         }
       }
 
-      Err(_) => return Err((read, write)),
+      Err(_) => return Err(()),
     }
   }
 }
@@ -153,7 +151,6 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 fn read_to_end<R: AsyncRead + Unpin>(r: &mut R) -> ReadToEnd<R> {
   ReadToEnd {
     inner: r,
-    n: 0,
   }
 }
 
@@ -161,11 +158,10 @@ fn read_to_end<R: AsyncRead + Unpin>(r: &mut R) -> ReadToEnd<R> {
 struct ReadToEnd<'a, R> {
   #[pin]
   inner: &'a mut R,
-  n: u64,
 }
 
-impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadToEnd<'a, R> {
-  type Output = Result<u64, (u64, std::io::Error)>;
+impl<R: AsyncRead + Unpin> std::future::Future for ReadToEnd<'_, R> {
+  type Output = Result<(), std::io::Error>;
 
   fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     let mut me = self.project();
@@ -176,12 +172,11 @@ impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadToEnd<'a, R> {
     loop {
       match me.inner.as_mut().poll_read(cx, &mut buf) {
         Poll::Pending => return Poll::Pending,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err((*me.n, e))),
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Ready(Ok(())) => {
           if buf.filled().is_empty() {
-            return Poll::Ready(Ok(*me.n)); 
+            return Poll::Ready(Ok(())); 
           } else {
-            *me.n += buf.filled().len() as u64;
             buf.clear();
             continue;
           }
@@ -211,8 +206,8 @@ struct ReadAndDispose<'a, R> {
   n: u64,
 }
 
-impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'a, R> {
-  type Output = Result<u64, (u64, std::io::Error)>;
+impl<R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'_, R> {
+  type Output = Result<(), std::io::Error>; 
 
   #[inline(always)]
   fn poll(
@@ -225,10 +220,10 @@ impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'a, R> {
       let mut buf = ReadBuf::uninit(&mut slice);
       match me.inner.as_mut().poll_read(cx, &mut buf) {
         Poll::Pending => return Poll::Pending,
-        Poll::Ready(Err(e)) => return Poll::Ready(Err((*me.n, e))),
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         Poll::Ready(Ok(())) => {
           if buf.filled().is_empty() {
-            return Poll::Ready(Err((*me.n, std::io::ErrorKind::UnexpectedEof.into())));
+            return Poll::Ready(Err(std::io::ErrorKind::UnexpectedEof.into()));
           } else {
             *me.n += buf.filled().len() as u64;
             
@@ -238,11 +233,11 @@ impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'a, R> {
               }
 
               std::cmp::Ordering::Equal => {
-                return Poll::Ready(Ok(*me.n));
+                return Poll::Ready(Ok(()));
               }
 
               std::cmp::Ordering::Greater => {
-                return Poll::Ready(Err((*me.n, std::io::ErrorKind::Other.into())));
+                return Poll::Ready(Err(std::io::ErrorKind::Other.into()));
               }
             }
           }
@@ -252,19 +247,17 @@ impl<'a, R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'a, R> {
   }
 }
 
-pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<u64, (u64, std::io::Error)> {
+pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
   let mut buf = BytesMut::from(readed);
-  let mut read: u64 = 0;
-  
   let mut first = true;
 
   loop {
     
     if !first || buf.is_empty() {
       match stream.read_buf(&mut buf).await {
-        Ok(0) => return Err((read, std::io::ErrorKind::UnexpectedEof.into())),
-        Ok(n) => read += n as u64,
-        Err(e) => return Err((read, e)) 
+        Err(e) => return Err(e), 
+        Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+        Ok(_) => {}
       }
     }
 
@@ -279,25 +272,22 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
               let expected = consumed + 2;
               match buf.len().cmp(&expected) {
                 std::cmp::Ordering::Equal => {
-                  return Ok(read)
+                  return Ok(())
                 }
 
                 std::cmp::Ordering::Less => {
                   let take = expected - buf.len();
-                  match read_and_dispose( stream, take as u64).await {
-                    Ok(n) => return Ok(read + n),
-                    Err((n, e)) => return Err((read + n, e))
-                  }
+                  return read_and_dispose( stream, take as u64).await;
                 }
 
                 std::cmp::Ordering::Greater => {
-                  return Err((read, std::io::ErrorKind::Other.into()));
+                  return Err(std::io::ErrorKind::Other.into());
                 }
               }
             }
 
             // not last chunk
-            let until = consumed as u64 + size;
+            let until = consumed as u64 + size + 2; // +2 is for the \r\n at the end of the chunk
             match (buf.len() as u64).cmp(&until) {
               std::cmp::Ordering::Equal => {
                 buf = BytesMut::new();
@@ -306,15 +296,8 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
 
               std::cmp::Ordering::Greater => {
                 let take = until - buf.len() as u64;
-                match read_and_dispose(stream, take).await {
-                  Ok(n) => {
-                    read += n;
-                    buf = BytesMut::new();
-                    continue;
-                  }
-
-                  Err((n, e)) => return Err((read + n, e))
-                }
+                read_and_dispose(stream, take).await?;
+                buf = BytesMut::new();
               }
 
               std::cmp::Ordering::Less => {
@@ -331,7 +314,7 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
       }
 
       Err(_) => {
-        return Err((read, std::io::ErrorKind::InvalidData.into()))
+        return Err(std::io::ErrorKind::InvalidData.into())
       }
     }
   }
