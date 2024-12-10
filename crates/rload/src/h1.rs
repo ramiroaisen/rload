@@ -9,7 +9,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   stream: &mut S,
   req_buf: &[u8],
-) -> Result<(u64, u64), (u64, u64)> {
+  keepalive: bool,
+) -> Result<(bool, (u64, u64)), (u64, u64)> {
   match stream.write_all(req_buf).await {
     Ok(()) => {}
     Err(_) => return Err((0, 0)),
@@ -26,9 +27,43 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       Ok(new_n) => {
         read += new_n as u64;
         let mut headers = [httparse::EMPTY_HEADER; 16];
-        match httparse::Response::new(&mut headers).parse(&res_buf[0..read as usize]) {
+        let mut res = httparse::Response::new(&mut headers);
+        match res.parse(&res_buf[0..read as usize]) {
           Ok(status) => match status {
             httparse::Status::Complete(head_n) => {
+              let is_keepalive = 'k: {
+                if !keepalive || res.version == Some(0) {
+                  // if disabled keepalive in arguments or server http version is http/1.0 we are not using keepalive
+                  break 'k false;
+                } else {
+                  for h in &headers {
+                    if h.name.eq_ignore_ascii_case("connection") { 
+                      match std::str::from_utf8(h.value) {
+                        Ok(str) => {
+                          for s in str.split(',') {
+                            if s.trim().eq_ignore_ascii_case("close") {
+                              // if the connection header contains "close" we are not using keepalive
+                              break 'k false;
+                            }
+                          }
+
+                          // if no "close" in the connection header we are using keepalive
+                          break 'k true;
+                        }
+
+                        Err(_) => {
+                          // if we cannot parse the connection header, we default to keepalive
+                          break 'k true
+                        }
+                      }
+                    }
+                  }
+
+                  // if no connection header, in http/1.1 default is keepalive
+                  break 'k true;
+                }
+              };
+
               let content_length = 'content_length: {
                 for h in &headers {
                   if !h.name.eq_ignore_ascii_case("content-length") {
@@ -57,12 +92,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   let to_read = (len + head_n as u64).saturating_sub(read);
 
                   if to_read == 0 {
-                    return Ok((read, write));
+                    return Ok((is_keepalive, (read, write)));
                   }
     
                   match read_and_dispose(stream, to_read).await {
-                    Ok(n) => return Ok((read + n, write)),
-                    Err((n, _)) => return Ok((read + n, write))
+                    Ok(n) => return Ok((is_keepalive, (read + n, write))),
+                    Err((n, _)) => return Err((read + n, write))
                   }
                 }
 
@@ -84,7 +119,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   if is_chunked {
 
                     match consume_chunked_body(stream, &res_buf[head_n..read as usize]).await {
-                      Ok(n) => return Ok((read + n, write)),
+                      Ok(n) => return Ok((is_keepalive, (read + n, write))),
                       Err((n, _)) => return Err((read + n, write))
                     }
 
@@ -92,7 +127,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   // dispose the connection, as in curl
                   } else {
                     match read_to_end(stream).await {
-                      Ok(n) => return Ok((read + n, write)),
+                      Ok(n) => return Ok((false, (read + n, write))),
                       Err((n, _)) => return Err((read + n, write))
                     }
                   }

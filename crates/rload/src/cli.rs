@@ -1,6 +1,7 @@
 use clap::Parser;
 use human_bytes::human_bytes;
-use std::time::Duration;
+use url::Url;
+use std::{net::SocketAddr, time::Duration};
 use tokio::time::Instant;
 
 use crate::args::{Request, RunConfig};
@@ -58,17 +59,84 @@ pub struct Args {
   pub duration: Duration,
 }
 
-pub fn run() -> Result<(), anyhow::Error> {
+#[derive(Debug, Clone)]
+pub struct Report {
+  pub url: Url,
+  pub address: SocketAddr,
+  pub http_version: HttpVersion,
+  pub keepalive: bool,
+
+  pub threads: usize,
+  pub concurrency: usize,
+  pub duration: Duration,
+  pub elapsed: Duration,
+
+  pub ok: u64,
+  pub err: u64,
+  pub read: u64,
+  pub write: u64,
+}
+
+impl std::fmt::Display for Report {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
+    let secs = self.elapsed.as_secs_f64();
+    writeln!(f, "· url:          {}", self.url)?;
+    writeln!(f, "· address:      {}", self.address)?;
+    writeln!(f, "· http-version: {}", self.http_version)?;
+    writeln!(f, 
+      "· keepalive:    {}",
+      if self.keepalive { "enabled" } else { "disabled" }
+    )?;
+
+    writeln!(f, "· threads:      {}", self.threads)?;
+    writeln!(f, "· concurrency:  {}", self.concurrency)?;
+    writeln!(f, "· duration:     {}ms", self.duration.as_millis())?;
+
+    writeln!(f, "· elapsed:      {}ms", self.elapsed.as_millis())?;
+    writeln!(f, "· ok:           {}", self.ok)?;
+    writeln!(f, "· errors:       {}", self.err)?;
+    writeln!(f, "· read:         {} - {}/s",
+      human_bytes(self.read as f64),
+      human_bytes(self.read as f64 / secs)
+    )?;
+    writeln!(f, "· write:        {} - {}/s",
+      human_bytes(self.write as f64),
+      human_bytes(self.write as f64 / secs)
+    )?;
+    
+    writeln!(f, "· req/s:        {}", (self.ok as f64 / secs).round() as u64)?;
+
+    Ok(())
+  }  
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum HttpVersion {
+  Http1,
+  Http2,
+}
+
+impl std::fmt::Display for HttpVersion {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      HttpVersion::Http1 => write!(f, "http/1"),
+      HttpVersion::Http2 => write!(f, "h2"),
+    }
+  }
+}
+
+
+pub fn run() -> Result<Report, anyhow::Error> {
   let args = Args::parse();
   run_with_args(args)
 }
 
-pub fn run_with_args(args: Args) -> Result<(), anyhow::Error> {
+pub fn run_with_args(args: Args) -> Result<Report, anyhow::Error> {
   let config = RunConfig::from_args(args)?;
   run_with_config(config)
 }
 
-pub fn run_with_config(config: RunConfig<'static>) -> Result<(), anyhow::Error> {
+pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Error> {
   let start = Instant::now();
   let until = start + config.duration;
 
@@ -94,39 +162,29 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<(), anyhow::Error> 
 
   let elapsed = start.elapsed();
 
-  let secs = elapsed.as_secs_f64();
-
-  let version = match config.request {
-    Request::H1 { .. } => "http/1",
-    Request::H2 { .. } => "h2",
+  let http_version = match config.request {
+    Request::H1 { .. } => HttpVersion::Http1,
+    Request::H2 { .. } => HttpVersion::Http2,
   };
 
-  println!("· url:          {}", config.url);
-  println!("· address:      {}", config.addr);
-  println!("· http-version: {}", version);
-  println!(
-    "· keepalive:    {}",
-    if config.no_keepalive { "disabled" } else { "enabled" }
-  );
-  println!("· concurrency:  {}", config.concurrency);
-  println!("· duration:     {}ms", config.duration.as_millis());
+  let report = Report {
+    url: config.url.clone(),
+    address: config.addr,
+    http_version,
+    keepalive: !config.no_keepalive,
 
-  println!("· elapsed:      {}ms", elapsed.as_millis());
-  println!("· ok:           {}", ok);
-  println!("· errors:       {}", err);
-  println!(
-    "· write:       {} - {}/s",
-    human_bytes(write as f64),
-    human_bytes(write as f64 / secs)
-  );
-  println!(
-    "· read:        {} - {}/s",
-    human_bytes(read as f64),
-    human_bytes(read as f64 / secs)
-  );
-  println!("· req/s:       {}", (ok as f64 / secs).round() as u64);
+    ok,
+    err,
+    read,
+    write,
+    
+    threads: config.threads,
+    concurrency: config.concurrency,
+    duration: config.duration,
+    elapsed,
+  };
 
-  Ok(())
+  Ok(report)
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -145,12 +203,12 @@ async fn thread(config: RunConfig<'static>, until: Instant) -> (u64, u64, u64, u
           macro_rules! send_h1_requests {
             ($stream:ident, $buf:ident) => {{
               'req: loop {
-                match crate::h1::send_request(&mut $stream, $buf).await {
-                  Ok((read, write)) => {
+                match crate::h1::send_request(&mut $stream, $buf, !config.no_keepalive).await {
+                  Ok((is_keepalive, (read, write))) => {
                     task_read += read;
                     task_write += write;
                     task_ok += 1;
-                    if config.no_keepalive {
+                    if !is_keepalive {
                       continue 'conn;
                     } else {
                       continue 'req;
