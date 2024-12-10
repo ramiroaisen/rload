@@ -5,16 +5,18 @@ edition = "2021"
 
 [features]
 default = [ "full" ]
-full = [ "h1", "h2", "tls" ]
+full = [ "h1", "h2", "tls", "latency" ]
 h1 = [ "dep:httparse" ]
 h2 = [ "dep:h2" ]
 tls = [ "dep:rustls", "dep:tokio-rustls" ]
+latency = [ "dep:hdrhistogram" ]
 
 [dependencies]
 h2 = { version = "0.4.7", features = ["stream"], optional = true }
 httparse = { version = "1.9.5", optional = true }
 tokio-rustls = { version = "0.26.1", optional = true }
 rustls = { version = "0.23.19", optional = true }
+hdrhistogram = { version = "7.5.4", optional = true }
 
 anyhow = "1.0.94"
 bytes = "1.9.0"
@@ -28,3 +30,5 @@ regex_static = "0.1.1"
 tokio = { version = "1.42.0", features = ["full"] }
 url = "2.5.4"
 cfg-if = "1.0.0"
+humantime = "2.1.0"
+tokio-util = "0.7.13"

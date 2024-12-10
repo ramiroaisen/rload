@@ -42,22 +42,19 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 #[derive(Debug, Parser)]
 #[command(version, long_about = None)]
 pub struct Args {
+  /// the URL to benchmark
   #[arg(env = "URL")]
   pub url: String,
 
+  /// Number of threads to use, default is the number of logical CPUs
   #[arg(short, long, default_value_t = num_cpus::get(), env = "THREADS")]
   pub threads: usize,
 
+  /// Number of connections to keep open, it will be rounded up to the nearest multiple of threads
   #[arg(short, long, default_value_t = 1, env = "CONCURRENCY")]
   pub concurrency: usize,
 
-  #[arg(short = 'r', long, default_value_t = false, env = "NO_KEEPALIVE")]
-  pub no_keepalive: bool,
-
-  #[cfg(all(feature = "h1", feature = "h2"))]
-  #[arg(short = '2', long, default_value_t = false, env = "H2")]
-  pub h2: bool,
-
+  /// Duration for the test, any float or integer following by a unit from ns, us, ms, s, m, h, d 
   #[arg(
     short,
     long,
@@ -66,6 +63,21 @@ pub struct Args {
     value_parser = parse_duration
   )]
   pub duration: Duration,
+ 
+
+  /// Disable keepalive, if true each request will use a new connection
+  #[arg(short = 'r', long, visible_alias = "dk", default_value_t = false, env = "DISABLE_KEEPALIVE")]
+  pub disable_keepalive: bool,
+
+  /// Enable latency measurement and reporting
+  #[cfg(feature = "latency")]
+  #[arg(short = 'l', long, default_value_t = false, env = "LATENCY")]
+  pub latency: bool,
+
+  /// Use h2 protocol
+  #[cfg(all(feature = "h1", feature = "h2"))]
+  #[arg(short = '2', long, default_value_t = false, env = "H2")]
+  pub h2: bool,
 }
 
 
@@ -103,7 +115,9 @@ pub struct RunConfig<'a> {
   pub addr: SocketAddr,
   pub threads: usize,
   pub concurrency: usize,
-  pub no_keepalive: bool,
+  pub disable_keepalive: bool,
+  #[cfg(feature = "latency")]
+  pub latency: bool,
   pub request: Request<'a>,
   #[cfg(feature = "tls")]
   pub tls: Option<&'a Tls<'a>>,
@@ -116,7 +130,9 @@ impl RunConfig<'static> {
       url,
       threads,
       concurrency,
-      no_keepalive,
+      disable_keepalive,
+      #[cfg(feature = "latency")]
+      latency,
       #[cfg(all(feature = "h1", feature = "h2"))]
       h2,
       duration,
@@ -216,7 +232,7 @@ impl RunConfig<'static> {
             "content-length: 0".into(),
           ];
 
-          if no_keepalive {
+          if disable_keepalive {
             req_lines.push(String::from("connection: close"));
           }
 
@@ -262,7 +278,9 @@ impl RunConfig<'static> {
       addr,
       threads,
       concurrency,
-      no_keepalive,
+      disable_keepalive,
+      #[cfg(feature = "latency")]
+      latency,
       request,
       #[cfg(feature = "tls")]
       tls,

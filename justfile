@@ -14,12 +14,12 @@ build-all *args:
   cargo build --release {{args}} 
 
 all-feat cmd *args: 
-  cargo {{cmd}} -p rload --features=h1 {{args}}
-  cargo {{cmd}} -p rload --features=h2 {{args}}
-  cargo {{cmd}} -p rload --features=h1,h2 {{args}}
-  cargo {{cmd}} -p rload --features=h1,tls {{args}}
-  cargo {{cmd}} -p rload --features=h2,tls {{args}}
-  cargo {{cmd}} -p rload --features=h1,h2,tls {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1 {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2 {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2 {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,tls {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,tls {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls {{args}}
 
 check-all-feat *args:
   @just all-feat check {{args}}
