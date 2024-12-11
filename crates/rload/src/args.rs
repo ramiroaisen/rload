@@ -64,6 +64,15 @@ pub struct Args {
   )]
   pub duration: Duration,
  
+  /// Timeout for each request, any float or integer following by a unit from ns, us, ms, s, m, h, d 
+  #[cfg(feature = "timeout")]
+  #[arg(
+    short = 'u',
+    long,
+    env = "TIMEOUT",
+    value_parser = parse_duration
+  )]
+  pub timeout: Option<Duration>,
 
   /// Disable keepalive, if true each request will use a new connection
   #[arg(short = 'r', long, visible_alias = "dk", default_value_t = false, env = "DISABLE_KEEPALIVE")]
@@ -116,6 +125,8 @@ pub struct RunConfig<'a> {
   pub threads: usize,
   pub concurrency: usize,
   pub disable_keepalive: bool,
+  #[cfg(feature = "timeout")] 
+  pub timeout: Option<Duration>,
   #[cfg(feature = "latency")]
   pub latency: bool,
   pub request: Request<'a>,
@@ -131,6 +142,8 @@ impl RunConfig<'static> {
       threads,
       concurrency,
       disable_keepalive,
+      #[cfg(feature = "timeout")]
+      timeout,
       #[cfg(feature = "latency")]
       latency,
       #[cfg(all(feature = "h1", feature = "h2"))]
@@ -279,6 +292,8 @@ impl RunConfig<'static> {
       threads,
       concurrency,
       disable_keepalive,
+      #[cfg(feature = "timeout")]
+      timeout,
       #[cfg(feature = "latency")]
       latency,
       request,

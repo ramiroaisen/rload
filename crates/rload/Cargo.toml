@@ -5,10 +5,11 @@ edition = "2021"
 
 [features]
 default = [ "full" ]
-full = [ "h1", "h2", "tls", "latency" ]
+full = [ "h1", "h2", "tls", "timeout", "latency" ]
 h1 = [ "dep:httparse" ]
 h2 = [ "dep:h2" ]
 tls = [ "dep:rustls", "dep:tokio-rustls" ]
+timeout = []
 latency = [ "dep:hdrhistogram" ]
 
 [dependencies]

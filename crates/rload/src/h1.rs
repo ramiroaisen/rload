@@ -5,23 +5,27 @@ use httparse::{parse_chunk_size, Status};
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
+use crate::error::ErrorKind;
+
 #[inline(always)]
 pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   stream: &mut S,
   req_buf: &[u8],
   keepalive: bool,
-) -> Result<bool, ()> {
-  match stream.write_all(req_buf).await {
-    Ok(()) => {}
-    Err(_) => return Err(()),
-  };
+  #[cfg(feature = "timeout")] timeout: Option<std::time::Duration>,
+) -> Result<bool, ErrorKind> {
+  let inner = async move {
+    match stream.write_all(req_buf).await {
+      Ok(()) => {}
+      Err(_) => return Err(ErrorKind::Write),
+    };
 
-  let mut res_buf = [0u8; 128];
-  let mut read: u64 = 0;
+    let mut res_buf = [0u8; 128];
+    let mut read: u64 = 0;
 
-  'read: loop {
+    'read: loop {
     match stream.read(&mut res_buf[(read as usize)..]).await {
-      Ok(0) => return Err(()),
+      Ok(0) => return Err(ErrorKind::Read),
       Ok(new_n) => {
         read += new_n as u64;
         let mut headers = [httparse::EMPTY_HEADER; 16];
@@ -70,12 +74,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 
                   let str = match std::str::from_utf8(h.value) {
                     Ok(str) => str,
-                    Err(_) => return Err(()),
+                    Err(_) => return Err(ErrorKind::Parse),
                   };
 
                   let len = match str.parse::<u64>() {
                     Ok(v) => v,
-                    Err(_) => return Err(()),
+                    Err(_) => return Err(ErrorKind::Parse),
                   };
 
                   break 'content_length Some(len);
@@ -95,7 +99,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
     
                   match read_and_dispose(stream, to_read).await {
                     Ok(()) => return Ok(is_keepalive),
-                    Err(_) => return Err(())
+                    Err(_) => return Err(ErrorKind::ReadBody)
                   }
                 }
 
@@ -118,7 +122,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 
                     match consume_chunked_body(stream, &res_buf[head_n..read as usize]).await {
                       Ok(()) => return Ok(is_keepalive),
-                      Err(_) => return Err(())
+                      Err(_) => return Err(ErrorKind::ReadBody)
                     }
 
                   // no chunked encoding nor content-length, consume the response until the end and 
@@ -126,7 +130,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
                   } else {
                     match read_to_end(stream).await {
                       Ok(()) => return Ok(false),
-                      Err(_) => return Err(())
+                      Err(_) => return Err(ErrorKind::ReadBody)
                     }
                   }
                 }
@@ -138,11 +142,31 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
             }
           },
 
-          Err(_) => return Err(()),
+          Err(_) => return Err(ErrorKind::Parse),
         }
       }
 
-      Err(_) => return Err(()),
+      Err(_) => return Err(ErrorKind::Read),
+    }
+  }
+  };
+
+  #[cfg(not(feature = "timeout"))]
+  {
+    inner.await
+  }
+
+  #[cfg(feature = "timeout")]
+  {
+    match timeout {
+      Some(timeout) => {
+        match tokio::time::timeout(timeout, inner).await {
+          Ok(res) => res,
+          Err(_) => Err(ErrorKind::Timeout),
+        }
+      } 
+
+      None => inner.await
     }
   }
 }

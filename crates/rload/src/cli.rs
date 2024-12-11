@@ -3,13 +3,15 @@ use anyhow::Context;
 use clap::Parser;
 use human_bytes::human_bytes;
 use near_safe_cell::NearSafeCell;
-use tokio_util::sync::CancellationToken;
-use std::{net::SocketAddr, thread, time::Duration};
+use std::{fmt::Display, net::SocketAddr, thread, time::Duration};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
-  args::{Args, Request, RunConfig}, io::CounterStream
+  args::{Args, Request, RunConfig},
+  error::{ErrorKind, Errors},
+  io::CounterStream,
 };
 
 #[derive(Debug, Clone)]
@@ -24,8 +26,11 @@ pub struct Report {
   pub duration: Duration,
   pub elapsed: Duration,
 
+  #[cfg(feature = "timeout")]
+  pub timeout: Option<Duration>,
+
   pub ok: u64,
-  pub err: u64,
+  pub err: Errors,
   pub read: u64,
   pub write: u64,
 
@@ -36,13 +41,15 @@ pub struct Report {
 impl std::fmt::Display for Report {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let secs = self.elapsed.as_secs_f64();
-    
+
     writeln!(f)?;
     writeln!(f, "==========| Config |=========")?;
     writeln!(f, "url:          {}", self.url)?;
     writeln!(f, "address:      {}", self.address)?;
     writeln!(f, "http-version: {}", self.http_version)?;
-    writeln!(f, "keepalive:    {}",
+    writeln!(
+      f,
+      "keepalive:    {}",
       if self.keepalive {
         "enabled"
       } else {
@@ -52,7 +59,15 @@ impl std::fmt::Display for Report {
 
     writeln!(f, "threads:      {}", self.threads)?;
     writeln!(f, "concurrency:  {}", self.concurrency)?;
-    writeln!(f, "duration:     {}", crate::fmt::format_duration(self.duration))?; 
+    writeln!(
+      f,
+      "duration:     {}",
+      crate::fmt::format_duration(self.duration)
+    )?;
+    #[cfg(feature = "timeout")]
+    if let Some(timeout) = self.timeout {
+      writeln!(f, "timeout:      {}", crate::fmt::format_duration(timeout))?;
+    }
 
     #[cfg(feature = "latency")]
     {
@@ -64,23 +79,14 @@ impl std::fmt::Display for Report {
         crate::fmt::format_duration(Duration::from_nanos(nanos.round() as u64))
       }
 
-
-      if let Some(hdr) = &self.hdr {        
-        
-        let avg = {
-          let sum = hdr.iter_recorded().fold(0u64, |t, v| t + v.count_at_value() * v.value_iterated_to());
-          sum as f64 / hdr.len() as f64          
-        };
-
+      if let Some(hdr) = &self.hdr {
         writeln!(f)?;
         writeln!(f, "=========| Latency |=========")?;
         writeln!(f, "min:     {}", t(hdr.min()))?;
         writeln!(f, "max:     {}", t(hdr.max()))?;
-        writeln!(f, "avg:     {}", tf(avg))?; 
         writeln!(f, "mean:    {}", tf(hdr.mean()))?;
         writeln!(f, "stdev:   {}", tf(hdr.stdev()))?;
         writeln!(f, "-----------------------------")?;
-
 
         writeln!(f, "50.000%   {}", t(hdr.value_at_percentile(50.0)))?;
         writeln!(f, "75.000%   {}", t(hdr.value_at_percentile(75.0)))?;
@@ -94,25 +100,72 @@ impl std::fmt::Display for Report {
 
     writeln!(f)?;
     writeln!(f, "==========| Result |=========")?;
-    writeln!(f, "elapsed:      {}", crate::fmt::format_duration(self.elapsed))?;
-    writeln!(f, "requests:     {}", self.ok)?;
-    writeln!(f, "errors:       {}", self.err)?;
     writeln!(
       f,
-      "read:         {} - {}/s",
+      "elapsed:           {}",
+      crate::fmt::format_duration(self.elapsed)
+    )?;
+    writeln!(f, "fulfilled:         {}", self.ok)?;
+    {
+      let total= self.err.total();
+      let Errors {
+        connect,
+        tls_handshake,
+        read_body,
+        read,
+        write,
+        parse,
+        h2_handshake,
+        h2_ready,
+        h2_send,
+        h2_recv,
+        h2_body,
+        timeout,
+      } = self.err;
+      
+      if total == 0 {
+        writeln!(f, "errors:            0")?;
+      } else {
+        writeln!(f, "- errors")?;
+        fn err(f: &mut std::fmt::Formatter<'_>, name: impl Display, count: u64) -> std::fmt::Result { 
+          if count != 0 {
+            writeln!(f, "  · {: <15}{}", format!("{}:", name), count)?;
+          }
+
+          Ok(())
+        }
+
+        err(f, "total", total)?;
+        err(f, ErrorKind::Connect, connect)?;
+        err(f, ErrorKind::TlsHandshake, tls_handshake)?;
+        err(f, ErrorKind::ReadBody, read_body)?;
+        err(f, ErrorKind::Read, read)?;
+        err(f, ErrorKind::Write, write)?;
+        err(f, ErrorKind::Parse, parse)?;
+        err(f, ErrorKind::H2Handshake, h2_handshake)?;
+        err(f, ErrorKind::H2Ready, h2_ready)?;
+        err(f, ErrorKind::H2Send, h2_send)?;
+        err(f, ErrorKind::H2Recv, h2_recv)?;
+        err(f, ErrorKind::H2Body, h2_body)?;
+        err(f, ErrorKind::Timeout, timeout)?;
+      }
+    }
+    writeln!(
+      f,
+      "read:              {} - {}/s",
       human_bytes(self.read as f64),
       human_bytes(self.read as f64 / secs)
     )?;
     writeln!(
       f,
-      "write:        {} - {}/s",
+      "write:             {} - {}/s",
       human_bytes(self.write as f64),
       human_bytes(self.write as f64 / secs)
     )?;
 
     writeln!(
       f,
-      "requests/sec: {}",
+      "requests/sec:      {}",
       (self.ok as f64 / secs).round() as u64
     )?;
 
@@ -167,25 +220,30 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
   });
 
   let mut ok = 0;
-  let mut err = 0;
+  let mut err = Errors::new();
   let mut read = 0;
   let mut write = 0;
-  
+
   #[cfg(feature = "latency")]
   let mut hdr = hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram");
- 
-  let results = handles.into_iter().map(|h| h.join().unwrap()).collect::<Vec<_>>();
+
+  let results = handles
+    .into_iter()
+    .map(|h| h.join().unwrap())
+    .collect::<Vec<_>>();
   let elapsed = start.elapsed();
 
   for t in results {
     ok += t.ok;
-    err += t.err;
+    err.join(t.err);
     read += t.read;
     write += t.write;
     #[cfg(feature = "latency")]
     {
       if config.latency {
-        hdr.add(t.hdr).context("error adding latency histogram to the final result")?;
+        hdr
+          .add(t.hdr)
+          .context("error adding latency histogram to the final result")?;
       }
     }
   }
@@ -217,6 +275,10 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     threads: config.threads,
     concurrency: config.concurrency,
     duration: config.duration,
+
+    #[cfg(feature = "timeout")]
+    timeout: config.timeout,
+
     elapsed,
 
     #[cfg(feature = "latency")]
@@ -240,7 +302,7 @@ async fn watch_cancel(cancel: CancellationToken, until: Instant) {
 #[derive(Debug, Clone)]
 struct ThreadResult {
   ok: u64,
-  err: u64,
+  err: Errors,
   read: u64,
   write: u64,
   #[cfg(feature = "latency")]
@@ -252,24 +314,24 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
   let read: &'static _ = Box::leak(Box::new(NearSafeCell::new(0u64)));
   let write: &'static _ = Box::leak(Box::new(NearSafeCell::new(0u64)));
   #[cfg(feature = "latency")]
-  let hdr: &'static _ = Box::leak(Box::new(NearSafeCell::new(hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram"))));
-  
+  let hdr: &'static _ = Box::leak(Box::new(NearSafeCell::new(
+    hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram"),
+  )));
+
   let conns = (config.concurrency as f64 / config.threads as f64).ceil() as usize;
   let mut handles = Vec::with_capacity(conns);
   for _ in 0..conns {
     let signal = cancel.clone().cancelled_owned();
     let task = async move {
       let mut task_ok: u64 = 0;
-      let mut task_err: u64 = 0;
+      let mut task_err = Errors::new();
 
       let task = async {
         'conn: loop {
-
           #[cfg(feature = "h1")]
           macro_rules! send_h1_requests {
             ($stream:ident, $buf:ident) => {{
               'req: loop {
-
                 #[cfg(feature = "latency")]
                 let start = {
                   if config.latency {
@@ -279,7 +341,15 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
                   }
                 };
 
-                match crate::h1::send_request(&mut $stream, $buf, !config.disable_keepalive).await {
+                match crate::h1::send_request(
+                  &mut $stream,
+                  $buf,
+                  !config.disable_keepalive,
+                  #[cfg(feature = "timeout")]
+                  config.timeout,
+                )
+                .await
+                {
                   Ok(is_keepalive) => {
                     task_ok += 1;
                     #[cfg(feature = "latency")]
@@ -297,8 +367,8 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
                     }
                   }
 
-                  Err(()) => {
-                    task_err += 1;
+                  Err(e) => {
+                    task_err.record(e);
                     continue 'conn;
                   }
                 }
@@ -309,11 +379,10 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
           #[cfg(feature = "h2")]
           macro_rules! send_h2_requests {
             ($stream:ident, $req:ident) => {{
-
               let (mut h2, conn) = match h2::client::handshake($stream).await {
                 Ok(pair) => pair,
                 Err(_) => {
-                  task_err += 1;
+                  task_err.record(ErrorKind::H2Handshake);
                   continue 'conn;
                 }
               };
@@ -321,8 +390,14 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
               tokio::spawn(conn);
 
               'req: loop {
-
-                match crate::h2::send_request(h2, $req).await {
+                match crate::h2::send_request(
+                  h2,
+                  $req,
+                  #[cfg(feature = "timeout")]
+                  config.timeout,
+                )
+                .await
+                {
                   Ok(sender) => {
                     h2 = sender;
                     task_ok += 1;
@@ -333,8 +408,8 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
                     }
                   }
 
-                  Err(()) => {
-                    task_err += 1;
+                  Err(e) => {
+                    task_err.record(e);
                     continue 'conn;
                   }
                 }
@@ -345,13 +420,15 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
           let stream = match tokio::net::TcpStream::connect(config.addr).await {
             Ok(stream) => stream,
             Err(_) => {
-              task_err += 1;
+              task_err.record(ErrorKind::Connect);
               continue 'conn;
             }
           };
 
           #[allow(unused_mut)]
-          let mut stream = CounterStream::new(stream, unsafe { read.get_mut_unsafe() }, unsafe { write.get_mut_unsafe()  });
+          let mut stream = CounterStream::new(stream, unsafe { read.get_mut_unsafe() }, unsafe {
+            write.get_mut_unsafe()
+          });
 
           #[cfg(feature = "tls")]
           let tls = config.tls;
@@ -372,7 +449,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
             },
 
             #[cfg(not(feature = "tls"))]
-            Some(never) => match never {} 
+            Some(never) => match never {},
 
             #[cfg(feature = "tls")]
             Some(tls) => {
@@ -380,7 +457,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
               let mut stream = match tls.connector.connect(tls.server_name.clone(), stream).await {
                 Ok(stream) => stream,
                 Err(_) => {
-                  task_err += 1;
+                  task_err.record(ErrorKind::TlsHandshake);
                   continue 'conn;
                 }
               };
@@ -413,12 +490,12 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
   }
 
   let mut ok = 0;
-  let mut err = 0;
+  let mut err = Errors::new();
 
   for handle in handles {
     let (task_ok, task_err) = handle.await.unwrap();
     ok += task_ok;
-    err += task_err;
+    err.join(task_err);
   }
 
   ThreadResult {
