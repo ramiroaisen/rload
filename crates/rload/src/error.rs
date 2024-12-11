@@ -88,12 +88,33 @@ impl Errors {
 
   #[inline(always)]
   pub fn join(&mut self, other: Self) {
-    self.connect += other.connect;
-    self.tls_handshake += other.tls_handshake;
-    self.read += other.read;
-    self.write += other.write;
-    self.parse += other.parse;
-    self.timeout += other.timeout;
+    let Self {
+      connect,
+      tls_handshake,
+      read_body,
+      read,
+      write,
+      parse,
+      h2_handshake,
+      h2_ready,
+      h2_send,
+      h2_recv,
+      h2_body,
+      timeout,
+    } = other;
+
+    self.connect += connect;
+    self.tls_handshake += tls_handshake;
+    self.read_body += read_body;
+    self.read += read;
+    self.write += write;
+    self.parse += parse;
+    self.h2_handshake += h2_handshake;
+    self.h2_ready += h2_ready;
+    self.h2_send += h2_send;
+    self.h2_recv += h2_recv;    
+    self.h2_body += h2_body;
+    self.timeout += timeout;
   }
 
   pub fn total(self) -> u64 {
