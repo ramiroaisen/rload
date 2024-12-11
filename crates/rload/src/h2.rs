@@ -26,7 +26,7 @@ pub async fn send_request<B: Buf>(
       Err(_) => return Err(ErrorKind::H2Recv),
     };
 
-    let (_, mut body) = res.into_parts();
+    let mut body = res.into_body();
 
     while let Some(chunk) = body.data().await {
       match chunk {

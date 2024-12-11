@@ -16,3 +16,6 @@ pub mod h2;
 
 #[cfg(feature = "tls")]
 pub mod tls;
+
+use shadow_rs::shadow;
+shadow!(build);

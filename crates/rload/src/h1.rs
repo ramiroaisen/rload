@@ -1,11 +1,24 @@
 use std::{mem::MaybeUninit, pin::Pin, task::{Context, Poll}};
 
 use bytes::BytesMut;
-use httparse::{parse_chunk_size, Status};
+use httparse::{parse_chunk_size, Header, Status};
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::error::ErrorKind;
+
+/// The maximum total size of a request head allowed by the h1 parser
+const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 16;
+
+/// The maximum headers qty allowed by the h1 parser
+const H1_HTTP_MAX_HEADER_QTY: usize = 128;
+
+const CONNECTION: &str = "connection";
+const CLOSE: &str = "close";
+const CONTENT_LENGTH: &str = "content-length";
+const TRANSFER_ENCODING: &str = "transfer-encoding";
+const CHUNKED: &str = "chunked";
+const COMMA: u8 = b',';
 
 #[inline(always)]
 pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
@@ -20,135 +33,135 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       Err(_) => return Err(ErrorKind::Write),
     };
 
-    let mut res_buf = [0u8; 128];
-    let mut read: u64 = 0;
-
+    let mut buf = Vec::with_capacity(256);
+    
     'read: loop {
-    match stream.read(&mut res_buf[(read as usize)..]).await {
-      Ok(0) => return Err(ErrorKind::Read),
-      Ok(new_n) => {
-        read += new_n as u64;
-        let mut headers = [httparse::EMPTY_HEADER; 16];
-        let mut res = httparse::Response::new(&mut headers);
-        match res.parse(&res_buf[0..read as usize]) {
-          Ok(status) => match status {
-            httparse::Status::Complete(head_n) => {
-              let is_keepalive = 'k: {
-                if !keepalive || res.version == Some(0) {
-                  // if disabled keepalive in arguments or server http version is http/1.0 we are not using keepalive
-                  break 'k false;
-                } else {
-                  for h in &headers {
-                    if h.name.eq_ignore_ascii_case("connection") { 
-                      match std::str::from_utf8(h.value) {
-                        Ok(str) => {
-                          for s in str.split(',') {
-                            if s.trim().eq_ignore_ascii_case("close") {
-                              // if the connection header contains "close" we are not using keepalive
-                              break 'k false;
-                            }
-                          }
+      match stream.read_buf(&mut buf).await {
+        Ok(0) => return Err(ErrorKind::Read),
+        Ok(_) => {
+          
+          // we gain a little performance here, httparse will take care of initializing the headers
+          let mut headers = [MaybeUninit::<Header<'_>>::uninit(); H1_HTTP_MAX_HEADER_QTY];
+          let mut res = httparse::Response::new(&mut []);
 
-                          // if no "close" in the connection header we are using keepalive
-                          break 'k true;
-                        }
+          let mut config = httparse::ParserConfig::default();
+            
+          // we set the most permissive config
+          config.allow_spaces_after_header_name_in_responses(true);
+          config.allow_obsolete_multiline_headers_in_responses(true);
+          config.allow_space_before_first_header_name(true);
+          config.ignore_invalid_headers_in_responses(true);
+         
+          // this are for request only
+          // config.allow_multiple_spaces_in_request_line_delimiters(true)
 
-                        Err(_) => {
-                          // if we cannot parse the connection header, we default to keepalive
-                          break 'k true
-                        }
+          // we limit the parsing to the max size of the response head
+          // safety: we cannot overflow as we limit the length to buf.len()
+          let slice = unsafe { buf.get_unchecked(..buf.len().min(H1_HTTP_MAX_RESPONSE_HEAD_SIZE)) };
+          match config.parse_response_with_uninit_headers(&mut res, slice, &mut headers) {
+            Ok(status) => match status {
+              httparse::Status::Complete(head_len) => {
+                let is_keepalive = 'k: {
+                  if !keepalive || res.version != Some(1) {
+                    // if disabled keepalive in arguments or server http version is http/1.0 we are not using keepalive
+                    break 'k false;
+                  } else {
+                    for h in res.headers.iter() {
+                      if h.name.eq_ignore_ascii_case(CONNECTION) {
+                        // if "connection" contains "close" we are not in keepalive
+                        break 'k !header_contains(h.value, CLOSE);
                       }
                     }
+
+                    // if no connection header we default to keepalive, as in http/1.1 default
+                    break 'k true;
                   }
+                };
 
-                  // if no connection header, in http/1.1 default is keepalive
-                  break 'k true;
-                }
-              };
-
-              let content_length = 'content_length: {
-                for h in &headers {
-                  if !h.name.eq_ignore_ascii_case("content-length") {
-                    continue;
-                  }
-
-                  let str = match std::str::from_utf8(h.value) {
-                    Ok(str) => str,
-                    Err(_) => return Err(ErrorKind::Parse),
-                  };
-
-                  let len = match str.parse::<u64>() {
-                    Ok(v) => v,
-                    Err(_) => return Err(ErrorKind::Parse),
-                  };
-
-                  break 'content_length Some(len);
-                }
-
-                None
-              };
-
-              match content_length {
-                // identity encoding with content length
-                Some(len) => {
-                  let to_read = (len + head_n as u64).saturating_sub(read);
-
-                  if to_read == 0 {
-                    return Ok(is_keepalive);
-                  }
-    
-                  match read_and_dispose(stream, to_read).await {
-                    Ok(()) => return Ok(is_keepalive),
-                    Err(_) => return Err(ErrorKind::ReadBody)
-                  }
-                }
-
-                None => {
-                  let is_chunked = headers.iter().any(|h| {
-                    if !h.name.eq_ignore_ascii_case("transfer-encoding") {
-                      return false;
+                let content_length = 'content_length: {
+                  for h in res.headers.iter() {
+                    if !h.name.eq_ignore_ascii_case(CONTENT_LENGTH) {
+                      continue;
                     }
 
-                    let value= match std::str::from_utf8(h.value) {
-                      Ok(v) => v,
-                      Err(_) => return false,
+                    let str = match std::str::from_utf8(h.value) {
+                      Ok(str) => str,
+                      Err(_) => return Err(ErrorKind::Parse),
                     };
-                    
-                    value.eq_ignore_ascii_case("chunked")
-                  });
 
-                  // chunked encoding
-                  if is_chunked {
+                    let len = match str.parse::<u64>() {
+                      Ok(v) => v,
+                      Err(_) => return Err(ErrorKind::Parse),
+                    };
 
-                    match consume_chunked_body(stream, &res_buf[head_n..read as usize]).await {
+                    break 'content_length Some(len);
+                  }
+
+                  None
+                };
+
+                match content_length {
+                  // identity encoding with content length
+                  Some(content_length) => {
+                    let to_read = (head_len as u64 + content_length).saturating_sub(buf.len() as u64);
+
+                    if to_read == 0 {
+                      return Ok(is_keepalive);
+                    }
+      
+                    match read_and_dispose(stream, to_read).await {
                       Ok(()) => return Ok(is_keepalive),
                       Err(_) => return Err(ErrorKind::ReadBody)
                     }
+                  }
 
-                  // no chunked encoding nor content-length, consume the response until the end and 
-                  // dispose the connection, as in curl
-                  } else {
-                    match read_to_end(stream).await {
-                      Ok(()) => return Ok(false),
-                      Err(_) => return Err(ErrorKind::ReadBody)
+                  None => {
+                    let is_chunked = 'c: {
+                      for h in res.headers.iter() {
+                        if h.name.eq_ignore_ascii_case(TRANSFER_ENCODING) {
+                          // if "Transfer-Encoding" contains "chunked" item, then the transfer-encoding is chunked 
+                          break 'c header_contains(h.value, CHUNKED);
+                        }
+                      }
+                      // if no transfer-encoding header we default to not chunked, as http spec
+                      false
+                    };
+
+                    // chunked encoding
+                    if is_chunked {
+
+                      match consume_chunked_body(stream, &buf[head_len..]).await {
+                        Ok(()) => return Ok(is_keepalive),
+                        Err(_) => return Err(ErrorKind::ReadBody)
+                      }
+
+                    // no chunked encoding nor content-length, consume the response until the end
+                    // and dispose the connection, as curl does
+                    } else {
+                      match read_to_end(stream).await {
+                        Ok(()) => return Ok(false),
+                        Err(_) => return Err(ErrorKind::ReadBody)
+                      }
                     }
                   }
                 }
               }
-            }
 
-            httparse::Status::Partial => {
-              continue 'read;
-            }
-          },
+              httparse::Status::Partial => {
+                if buf.len() >= H1_HTTP_MAX_RESPONSE_HEAD_SIZE {
+                  return Err(ErrorKind::Parse);
+                }
+                continue 'read;
+              }
+            },
 
-          Err(_) => return Err(ErrorKind::Parse),
+            Err(_) => return Err(ErrorKind::Parse),
+          }
         }
-      }
 
-      Err(_) => return Err(ErrorKind::Read),
+        Err(_) => return Err(ErrorKind::Read),
+      }
     }
-  }
   };
 
   #[cfg(not(feature = "timeout"))]
@@ -170,6 +183,20 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
     }
   }
 }
+
+/// Returns true if a list formatted header value contains the needle
+/// Eg: "Transfer-Ecoding: chunked,gzip" contains "chunked" and "gzip" 
+#[inline(always)]
+fn header_contains(v: &[u8], needle: &str) -> bool {
+  for item in v.split(|c| *c == COMMA) {
+    if item.trim_ascii().eq_ignore_ascii_case(needle.as_bytes()) {
+      return true
+    }
+  }
+
+  false
+}
+
 
 #[inline(always)]
 fn read_to_end<R: AsyncRead + Unpin>(r: &mut R) -> ReadToEnd<R> {
@@ -209,9 +236,6 @@ impl<R: AsyncRead + Unpin> std::future::Future for ReadToEnd<'_, R> {
     }
   }
 }
-
-
-
 
 #[inline(always)]
 fn read_and_dispose<R: AsyncRead + Unpin>(r: &mut R, take: u64) -> ReadAndDispose<R> {
@@ -272,6 +296,7 @@ impl<R: AsyncRead + Unpin> std::future::Future for ReadAndDispose<'_, R> {
 }
 
 pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
+
   let mut buf = BytesMut::from(readed);
   let mut first = true;
 
@@ -343,3 +368,4 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
     }
   }
 }
+

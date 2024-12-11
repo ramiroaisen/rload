@@ -88,13 +88,13 @@ impl std::fmt::Display for Report {
         writeln!(f, "stdev:   {}", tf(hdr.stdev()))?;
         writeln!(f, "-----------------------------")?;
 
-        writeln!(f, "50.000%   {}", t(hdr.value_at_percentile(50.0)))?;
-        writeln!(f, "75.000%   {}", t(hdr.value_at_percentile(75.0)))?;
-        writeln!(f, "90.000%   {}", t(hdr.value_at_percentile(95.0)))?;
-        writeln!(f, "99.000%   {}", t(hdr.value_at_percentile(99.0)))?;
-        writeln!(f, "99.900%   {}", t(hdr.value_at_percentile(99.9)))?;
-        writeln!(f, "99.990%   {}", t(hdr.value_at_percentile(99.99)))?;
-        writeln!(f, "99.999%   {}", t(hdr.value_at_percentile(99.999)))?;
+        writeln!(f, "50%      {}", t(hdr.value_at_percentile(50.0)))?;
+        writeln!(f, "75%      {}", t(hdr.value_at_percentile(75.0)))?;
+        writeln!(f, "90%      {}", t(hdr.value_at_percentile(95.0)))?;
+        writeln!(f, "99%      {}", t(hdr.value_at_percentile(99.0)))?;
+        writeln!(f, "99.9%    {}", t(hdr.value_at_percentile(99.9)))?;
+        writeln!(f, "99.99%   {}", t(hdr.value_at_percentile(99.99)))?;
+        writeln!(f, "99.999%  {}", t(hdr.value_at_percentile(99.999)))?;
       }
     }
 
@@ -203,6 +203,10 @@ pub fn run_with_args(args: Args) -> Result<Report, anyhow::Error> {
 }
 
 pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Error> {
+  
+  eprintln!("Running {} test @ {}", crate::fmt::format_duration(config.duration), config.url);
+  eprintln!("  {} threads and {} connections", config.threads, config.concurrency);
+  
   let start = Instant::now();
   let until = start + config.duration;
 

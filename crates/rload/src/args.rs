@@ -40,31 +40,41 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, long_about = None)]
+#[command(
+  disable_version_flag = true,
+  disable_help_flag = true,
+  version = crate::build::CLAP_LONG_VERSION,
+  arg_required_else_help = true
+)]
 pub struct Args {
   /// the URL to benchmark
   #[arg(env = "URL")]
   pub url: String,
 
-  /// Number of threads to use, default is the number of logical CPUs
-  #[arg(short, long, default_value_t = num_cpus::get(), env = "THREADS")]
-  pub threads: usize,
-
-  /// Number of connections to keep open, it will be rounded up to the nearest multiple of threads
-  #[arg(short, long, default_value_t = 1, env = "CONCURRENCY")]
+  /// Number of connections to keep open
+  #[arg(short, long, default_value_t = 10, env = "CONCURRENCY")]
   pub concurrency: usize,
 
-  /// Duration for the test, any float or integer following by a unit from ns, us, ms, s, m, h, d 
+  /// Duration for the test 
   #[arg(
     short,
     long,
-    default_value = "1s",
+    default_value = "10s",
     env = "DURATION",
     value_parser = parse_duration
   )]
   pub duration: Duration,
- 
-  /// Timeout for each request, any float or integer following by a unit from ns, us, ms, s, m, h, d 
+
+  /// Number of threads to use
+  #[arg(short, long, default_value_t = 2, env = "THREADS")]
+  pub threads: usize,
+
+  /// Add headers to the request
+  #[arg(short = 'H', long, value_parser, env = "HEADER")]
+  pub header: Vec<String>,
+  
+  
+  /// Timeout for each request 
   #[cfg(feature = "timeout")]
   #[arg(
     short = 'u',
@@ -74,7 +84,7 @@ pub struct Args {
   )]
   pub timeout: Option<Duration>,
 
-  /// Disable keepalive, if true each request will use a new connection
+  /// Disable keepalive
   #[arg(short = 'r', long, visible_alias = "dk", default_value_t = false, env = "DISABLE_KEEPALIVE")]
   pub disable_keepalive: bool,
 
@@ -87,6 +97,14 @@ pub struct Args {
   #[cfg(all(feature = "h1", feature = "h2"))]
   #[arg(short = '2', long, default_value_t = false, env = "H2")]
   pub h2: bool,
+
+  /// Print version information
+  #[arg(short = 'v', short_alias = 'V', long, action = clap::builder::ArgAction::Version)]
+  pub version: (),
+
+  /// Print this help message
+  #[arg(short = 'h', long, action = clap::builder::ArgAction::Help)]
+  pub help: (),
 }
 
 
@@ -149,6 +167,9 @@ impl RunConfig<'static> {
       #[cfg(all(feature = "h1", feature = "h2"))]
       h2,
       duration,
+      header,
+      version: _,
+      help: _,
     } = args;
 
     if threads == 0 {
@@ -159,7 +180,7 @@ impl RunConfig<'static> {
       anyhow::bail!("concurrency option must be greater than 0");
     }
 
-    if duration.as_secs_f64() < 0.000_000_001 {
+    if duration.as_nanos() == 0 {
       anyhow::bail!("duration option must be equal or greater than 1ns");
     }
 
@@ -203,7 +224,6 @@ impl RunConfig<'static> {
         Some(tls)
       }
 
-      #[cfg(feature = "tls")]
       other => anyhow::bail!("invalid scheme {other}, must be http or https"),
     };
 
@@ -212,10 +232,8 @@ impl RunConfig<'static> {
       match url.scheme() {
         "http" => {},
 
-        #[cfg(not(feature = "tls"))]
         "https" => anyhow::bail!("feature tls must be enabled at compile time to use https urls"),
 
-        #[cfg(not(feature = "tls"))]
         other => anyhow::bail!("invalid scheme {other}, must be http or https (https requires feature=tls to be enabled at compile time, not enabled)"),
       }
     };
@@ -245,6 +263,22 @@ impl RunConfig<'static> {
             "content-length: 0".into(),
           ];
 
+          for h in header {
+            let (k, v) = h.split_once(':').context("invalid header format, must be key:value")?;
+            let hk = http::header::HeaderName::from_bytes(k.trim().as_bytes())
+              .with_context(|| format!("invalid header name {k}"))?;
+              
+            let k = hk.as_str();
+            
+            let hv = http::header::HeaderValue::from_str(v.trim())
+              .with_context(|| format!("invalid header value {v}"))?;
+              
+            let v = hv.to_str()
+              .with_context(|| format!("invalid header value {v}, only utf-8 is supported"))?;
+           
+            req_lines.push(format!("{k}: {v}"));
+          }
+
           if disable_keepalive {
             req_lines.push(String::from("connection: close"));
           }
@@ -263,6 +297,16 @@ impl RunConfig<'static> {
         let req: &'static _ = {
           let mut req = http::Request::new(());
           *req.uri_mut() = Uri::from_static(url.to_string().leak());
+          
+          for h in header {
+            let (k, v) = h.split_once(':').context("invalid header format, must be key:value")?;
+            let hk = http::header::HeaderName::from_bytes(k.trim().as_bytes())
+              .with_context(|| format!("invalid header name {k}"))?;
+            let hv = http::header::HeaderValue::from_str(v.trim())
+              .with_context(|| format!("invalid header value {v}"))?;
+            req.headers_mut().append(hk, hv);
+          }
+
           Box::leak(Box::new(req))
         };
         req
