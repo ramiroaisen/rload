@@ -5,7 +5,7 @@ use httparse::{parse_chunk_size, Header, Status};
 use pin_project::pin_project;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use crate::error::ErrorKind;
+use crate::{error::ErrorKind, status::Statuses};
 
 /// The maximum total size of a request head allowed by the h1 parser
 const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 16;
@@ -25,7 +25,9 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   stream: &mut S,
   req_buf: &[u8],
   keepalive: bool,
-  #[cfg(feature = "timeout")] timeout: Option<std::time::Duration>,
+  statuses: &mut Statuses,
+  #[cfg(feature = "timeout")]
+  timeout: Option<std::time::Duration>,
 ) -> Result<bool, ErrorKind> {
   let inner = async move {
     match stream.write_all(req_buf).await {
@@ -61,6 +63,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
           match config.parse_response_with_uninit_headers(&mut res, slice, &mut headers) {
             Ok(status) => match status {
               httparse::Status::Complete(head_len) => {
+                
+                if let Some(status) = res.code {
+                  // Safety: httparse parses status codes as three digits numbers, so the max possible value is 999
+                  unsafe { statuses.record_unchecked(status) };
+                }
+
                 let is_keepalive = 'k: {
                   if !keepalive || res.version != Some(1) {
                     // if disabled keepalive in arguments or server http version is http/1.0 we are not using keepalive

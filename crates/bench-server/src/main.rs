@@ -2,6 +2,8 @@ use std::net::IpAddr;
 use anyhow::Context;
 use axum::{body::Body, response::Response};
 use clap::Parser;
+use hyper::StatusCode;
+use rand::Rng;
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -32,7 +34,8 @@ fn main() -> Result<(), anyhow::Error> {
 
 async fn async_main(args: Args) -> Result<(), anyhow::Error> {
   let app = axum::Router::new()
-    .route("/", axum::routing::get(root)); 
+    .route("/", axum::routing::get(root)) 
+    .route("/random-status", axum::routing::get(random_status)); 
 
   let addr = std::net::SocketAddr::from((args.addr, args.port));
 
@@ -51,4 +54,13 @@ async fn async_main(args: Args) -> Result<(), anyhow::Error> {
 
 async fn root() -> Response {
   Response::new(Body::empty())
+}
+
+
+async fn random_status() -> Response {
+  let status = rand::thread_rng().gen_range(200u16..=999);
+  let status = StatusCode::from_u16(status).unwrap();
+  let mut res = Response::new(Body::empty());
+  *res.status_mut() = status;
+  res
 }

@@ -1,13 +1,16 @@
 use bytes::Buf;
 use h2::client::SendRequest;
 
-use crate::error::ErrorKind;
+use crate::{error::ErrorKind, status::Statuses};
 
 #[inline(always)]
 pub async fn send_request<B: Buf>(
   mut h2: h2::client::SendRequest<B>,
-  req: &'static http::Request<()>,
-  #[cfg(feature = "timeout")] timeout: Option<std::time::Duration>,
+  // we use a closure to avoid cloning the request in advance
+  req: impl Fn() -> http::Request<()>,
+  statuses: &mut Statuses,
+  #[cfg(feature = "timeout")]
+  timeout: Option<std::time::Duration>,
 ) -> Result<SendRequest<B>, ErrorKind> {
   
   let inner = async move {
@@ -16,7 +19,7 @@ pub async fn send_request<B: Buf>(
       Err(_) => return Err(ErrorKind::H2Ready),
     };
 
-    let res = match h2.send_request(req.clone(), true) {
+    let res = match h2.send_request(req(), true) {
       Ok((res, _send_stream)) => res,
       Err(_) => return Err(ErrorKind::H2Send),
     };
@@ -24,6 +27,11 @@ pub async fn send_request<B: Buf>(
     let res = match res.await {
       Ok(res) => res,
       Err(_) => return Err(ErrorKind::H2Recv),
+    };
+
+    unsafe {
+      // Safety: the maximum u16 value for an http::StatusCode code is 999
+      statuses.record_unchecked(res.status().as_u16())
     };
 
     let mut body = res.into_body();

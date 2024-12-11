@@ -214,7 +214,7 @@ impl RunConfig<'static> {
         }
 
         let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
-        let server_name = ServerName::try_from(host).context("invalid server name in host")?;
+        let server_name = ServerName::try_from(host).context("invalid server name in url host")?;
 
         let tls: &'static _ = Box::leak(Box::new(Tls {
           connector,

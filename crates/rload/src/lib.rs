@@ -9,6 +9,7 @@ pub mod args;
 pub mod io;
 pub mod fmt;
 pub mod error;
+pub mod status;
 #[cfg(feature = "h1")]
 pub mod h1;
 #[cfg(feature = "h2")]

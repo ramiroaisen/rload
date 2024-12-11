@@ -11,7 +11,7 @@ use url::Url;
 use crate::{
   args::{Args, Request, RunConfig},
   error::{ErrorKind, Errors},
-  io::CounterStream,
+  io::CounterStream, status::Statuses,
 };
 
 #[derive(Debug, Clone)]
@@ -33,6 +33,7 @@ pub struct Report {
   pub err: Errors,
   pub read: u64,
   pub write: u64,
+  pub statuses: Vec<(u16, u64)>,
 
   #[cfg(feature = "latency")]
   pub hdr: Option<hdrhistogram::Histogram<u64>>,
@@ -98,6 +99,7 @@ impl std::fmt::Display for Report {
       }
     }
 
+
     writeln!(f)?;
     writeln!(f, "==========| Result |=========")?;
     writeln!(
@@ -126,7 +128,7 @@ impl std::fmt::Display for Report {
       if total == 0 {
         writeln!(f, "errors:            0")?;
       } else {
-        writeln!(f, "- errors")?;
+        writeln!(f, "- Errors")?;
         fn err(f: &mut std::fmt::Formatter<'_>, name: impl Display, count: u64) -> std::fmt::Result { 
           if count != 0 {
             writeln!(f, "  · {: <15}{}", format!("{}:", name), count)?;
@@ -150,6 +152,15 @@ impl std::fmt::Display for Report {
         err(f, ErrorKind::Timeout, timeout)?;
       }
     }
+
+    let has_non_200 = self.statuses.iter().any(|(status, _)| *status != 200);
+    if has_non_200 {
+      writeln!(f, "- Status codes")?;
+      for (status, count) in self.statuses.iter() {
+        writeln!(f, "  · {}: {}", status, count)?;
+      }
+    }
+
     writeln!(
       f,
       "read:              {} - {}/s",
@@ -227,6 +238,7 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
   let mut err = Errors::new();
   let mut read = 0;
   let mut write = 0;
+  let mut statuses = Statuses::new();
 
   #[cfg(feature = "latency")]
   let mut hdr = hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram");
@@ -242,6 +254,7 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     err.join(t.err);
     read += t.read;
     write += t.write;
+    statuses.join(t.statuses);
     #[cfg(feature = "latency")]
     {
       if config.latency {
@@ -275,6 +288,7 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     err,
     read,
     write,
+    statuses: statuses.iter().collect(),
 
     threads: config.threads,
     concurrency: config.concurrency,
@@ -306,21 +320,18 @@ async fn watch_cancel(cancel: CancellationToken, until: Instant) {
 #[derive(Debug, Clone)]
 struct ThreadResult {
   ok: u64,
-  err: Errors,
   read: u64,
   write: u64,
   #[cfg(feature = "latency")]
-  hdr: &'static hdrhistogram::Histogram<u64>,
+  hdr: hdrhistogram::Histogram<u64>,
+  err: Errors,
+  statuses: Statuses,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> ThreadResult {
   let read: &'static _ = Box::leak(Box::new(NearSafeCell::new(0u64)));
   let write: &'static _ = Box::leak(Box::new(NearSafeCell::new(0u64)));
-  #[cfg(feature = "latency")]
-  let hdr: &'static _ = Box::leak(Box::new(NearSafeCell::new(
-    hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram"),
-  )));
 
   let conns = (config.concurrency as f64 / config.threads as f64).ceil() as usize;
   let mut handles = Vec::with_capacity(conns);
@@ -329,6 +340,9 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
     let task = async move {
       let mut task_ok: u64 = 0;
       let mut task_err = Errors::new();
+      let mut task_statuses = Statuses::new();
+      #[cfg(feature = "latency")]
+      let mut hdr = hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram");
 
       let task = async {
         'conn: loop {
@@ -349,6 +363,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
                   &mut $stream,
                   $buf,
                   !config.disable_keepalive,
+                  &mut task_statuses,
                   #[cfg(feature = "timeout")]
                   config.timeout,
                 )
@@ -360,7 +375,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
                     {
                       if let Some(start) = start {
                         let elapsed = start.elapsed().as_nanos();
-                        unsafe { hdr.get_mut_unsafe().record(elapsed as u64).unwrap() };
+                        hdr.record(elapsed as u64).unwrap();
                       }
                     }
 
@@ -396,7 +411,8 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
               'req: loop {
                 match crate::h2::send_request(
                   h2,
-                  $req,
+                  || $req.clone(),
+                  &mut task_statuses,
                   #[cfg(feature = "timeout")]
                   config.timeout,
                 )
@@ -485,7 +501,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
         _ = signal => {}
       }
 
-      (task_ok, task_err)
+      (task_ok, task_err, task_statuses, hdr)
     };
 
     let handle = tokio::spawn(task);
@@ -495,11 +511,15 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
 
   let mut ok = 0;
   let mut err = Errors::new();
+  let mut statuses = Statuses::new();
+  let mut hdr = hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram");
 
   for handle in handles {
-    let (task_ok, task_err) = handle.await.unwrap();
+    let (task_ok, task_err, task_statuses, task_hdr) = handle.await.unwrap();
     ok += task_ok;
     err.join(task_err);
+    statuses.join(task_statuses);
+    hdr.add(task_hdr).expect("error adding task latency histogram to thread latency histogram");
   }
 
   ThreadResult {
@@ -507,6 +527,7 @@ async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Thread
     err,
     read: **read,
     write: **write,
+    statuses,
     #[cfg(feature = "latency")]
     hdr,
   }
