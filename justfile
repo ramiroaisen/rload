@@ -20,6 +20,12 @@ all-feat cmd *args:
   cargo {{cmd}} -p rload --no-default-features --features=h1,tls {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h2,tls {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,tls,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,tls,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls,timeout {{args}}
 
 check-all-feat *args:
   @just all-feat check {{args}}
