@@ -20,7 +20,7 @@ impl std::fmt::Display for ErrorKind {
       ErrorKind::Connect => write!(f, "connect"),
       ErrorKind::TlsHandshake => write!(f, "tls-handshake"),
       ErrorKind::Read => write!(f, "read"),
-      ErrorKind::ReadBody => write!(f, "read_body"),
+      ErrorKind::ReadBody => write!(f, "read-body"),
       ErrorKind::Write => write!(f, "write"),
       ErrorKind::Parse => write!(f, "parse"),
       ErrorKind::Timeout => write!(f, "timeout"),
