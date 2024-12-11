@@ -20,12 +20,24 @@ all-feat cmd *args:
   cargo {{cmd}} -p rload --no-default-features --features=h1,tls {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h2,tls {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,latency {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,latency {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,latency {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,tls,latency {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,tls,latency {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls,latency {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,timeout {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h2,timeout {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,h2,timeout {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,tls,timeout {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h2,tls,timeout {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,latency,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,latency,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,latency,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,tls,latency,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h2,tls,latency,timeout {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,h2,tls,latency,timeout {{args}}
 
 check-all-feat *args:
   @just all-feat check {{args}}
@@ -36,3 +48,7 @@ build-all-feat *args:
 test-all-feat *args:
   @just all-feat test {{args}}
 
+internal-bench *args:
+  #!/usr/bin/env -S parallel --shebang --ungroup
+  rload {{args}}
+  wrk {{args}}
