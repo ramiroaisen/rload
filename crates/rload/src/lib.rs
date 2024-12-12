@@ -10,6 +10,9 @@ pub mod io;
 pub mod fmt;
 pub mod error;
 pub mod status;
+pub mod run;
+pub mod report;
+pub mod http;
 #[cfg(feature = "h1")]
 pub mod h1;
 #[cfg(feature = "h2")]

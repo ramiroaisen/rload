@@ -58,7 +58,8 @@ pub async fn send_request<B: Buf>(
   {
     match timeout {
       Some(timeout) => {
-        match tokio::time::timeout(timeout, inner).await {
+        // note that pingora timeouts will ceil to the next 10ms
+        match pingora_timeout::timeout(timeout, inner).await {
           Ok(res) => res,
           Err(_) => Err(ErrorKind::Timeout),
         }
