@@ -2,7 +2,7 @@ use std::{fmt::Display, net::SocketAddr, time::Duration};
 use human_bytes::human_bytes;
 use url::Url;
 
-use crate::error::{Errors, ErrorKind};
+use crate::{error::{ErrorKind, Errors}, fmt::format_duration};
 
 #[derive(Debug, Clone)]
 pub struct Report {
@@ -10,6 +10,8 @@ pub struct Report {
   pub address: SocketAddr,
   pub http_version: crate::http::Version,
   pub keepalive: bool,
+  pub method: String,
+  pub body_len: usize,
 
   pub threads: usize,
   pub concurrency: usize,
@@ -33,11 +35,29 @@ impl std::fmt::Display for Report {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let secs = self.elapsed.as_secs_f64();
 
+    if self.ok == 0 {
+      write!(f,
+        "no data was collected, all requests failed or didn't complete"
+,      )?;
+    } else {
+      write!(f,
+        " {} requests in {}. {} read, {} write",
+        self.ok,
+        format_duration(self.elapsed),
+        human_bytes(self.read as f64),
+        human_bytes(self.write as f64),
+      )?;
+    }
+
     writeln!(f)?;
     writeln!(f, "==========| Config |=========")?;
     writeln!(f, "url:          {}", self.url)?;
     writeln!(f, "address:      {}", self.address)?;
     writeln!(f, "http-version: {}", self.http_version)?;
+    writeln!(f, "method:       {}", self.method)?;
+    if self.body_len != 0 || !matches!(self.method.as_ref(), "GET" | "HEAD" | "DELETE" | "OPTIONS" | "TRACE") { 
+      writeln!(f, "body:         {}", human_bytes(self.body_len as f64))?;
+    }
     writeln!(
       f,
       "keepalive:    {}",

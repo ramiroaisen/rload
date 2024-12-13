@@ -13,3 +13,4 @@ num_cpus = "1.16.0"
 rand = "0.8.5"
 serde = { version = "1.0.216", features = ["derive"] }
 tokio = { version = "1.42.0", features = ["full"] }
+tokio-stream = { version = "0.1.17", features = ["full"] }

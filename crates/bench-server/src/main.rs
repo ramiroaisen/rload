@@ -2,17 +2,14 @@ use anyhow::Context;
 use axum::{body::Body, response::Response};
 use clap::Parser;
 use hyper::StatusCode;
-use rand::seq::SliceRandom;
+use rand::{thread_rng, Rng};
 use serde::Deserialize;
 // use rand::Rng;
 use std::{
   convert::Infallible,
   net::IpAddr,
   str::FromStr,
-  sync::atomic::{AtomicU16, Ordering},
 };
-
-pub static RANDOM_STATUS: AtomicU16 = AtomicU16::new(400);
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -39,21 +36,13 @@ fn main() -> Result<(), anyhow::Error> {
 }
 
 async fn async_main(args: Args) -> Result<(), anyhow::Error> {
-  tokio::spawn(async {
-    loop {
-      tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-      let current = RANDOM_STATUS.load(Ordering::Acquire);
-      let next = if current >= 599 { 400 } else { current + 1 };
-
-      RANDOM_STATUS.store(next, Ordering::Release);
-    }
-  });
 
   let app = axum::Router::new()
     .route("/", axum::routing::get(root))
     .route("/random-status", axum::routing::get(random_status))
     .route("/full/:unit/:len", axum::routing::get(full))
-    .route("/chunked/:unit/:len", axum::routing::get(chunked));
+    .route("/chunked/:unit/:len", axum::routing::get(chunked))
+    .route("/echo", axum::routing::post(echo));
 
   let addr = std::net::SocketAddr::from((args.addr, args.port));
 
@@ -127,12 +116,13 @@ async fn full(axum::extract::Path((unit, n)): axum::extract::Path<(Unit, usize)>
   Response::new(body)
 }
 
-async fn random_status() -> Response {
-  let choices: &[u16] = &[
-    200, 201, 202, 203, 204, 205, 206, 207, 208
-  ];
+async fn echo(req: axum::extract::Request) -> Response {
+  let body = req.into_body();
+  Response::new(body)
+}
 
-  let status = *choices.choose(&mut rand::thread_rng()).unwrap();
+async fn random_status() -> Response {
+  let status = thread_rng().gen_range(100..=999);
 
   // let status = StatusCode::from_u16(RANDOM_STATUS.load(Ordering::Acquire)).unwrap();
   let mut res = Response::new(Body::empty());

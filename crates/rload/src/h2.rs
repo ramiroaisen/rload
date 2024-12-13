@@ -1,17 +1,17 @@
-use bytes::Buf;
+use bytes::Bytes; 
 use h2::client::SendRequest;
 
 use crate::{error::ErrorKind, status::Statuses};
 
 #[inline(always)]
-pub async fn send_request<B: Buf>(
-  mut h2: h2::client::SendRequest<B>,
+pub async fn send_request(
+  mut h2: h2::client::SendRequest<Bytes>,
   // we use a closure to avoid cloning the request in advance
-  req: impl Fn() -> http::Request<()>,
+  req: impl Fn() -> (http::Request<()>, Option<Bytes>),
   statuses: &mut Statuses,
   #[cfg(feature = "timeout")]
   timeout: Option<std::time::Duration>,
-) -> Result<SendRequest<B>, ErrorKind> {
+) -> Result<SendRequest<Bytes>, ErrorKind> {
   
   let inner = async move {
     h2 = match h2.ready().await {
@@ -19,10 +19,24 @@ pub async fn send_request<B: Buf>(
       Err(_) => return Err(ErrorKind::H2Ready),
     };
 
-    let res = match h2.send_request(req(), true) {
-      Ok((res, _send_stream)) => res,
+    let (req, body) = req();
+
+    let has_body = body.is_some();
+    let (res, mut send_stream) = match h2.send_request(req, !has_body) {
+      Ok(pair) => pair,
       Err(_) => return Err(ErrorKind::H2Send),
     };
+
+    match body {
+      None => {
+        drop(send_stream);
+      }
+      Some(slice) => {
+        tokio::spawn(async move {
+          send_stream.send_data(slice, true)
+        });
+      }
+    }      
 
     let res = match res.await {
       Ok(res) => res,

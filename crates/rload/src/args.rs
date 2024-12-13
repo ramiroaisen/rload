@@ -1,10 +1,9 @@
 use anyhow::Context;
+use clap::Parser;
 use std::{
-  net::{SocketAddr, ToSocketAddrs},
-  time::Duration,
+  net::{SocketAddr, ToSocketAddrs}, path::Path, time::Duration
 };
 use url::Url;
-use clap::Parser;
 
 #[cfg(feature = "h2")]
 use http::Uri;
@@ -55,7 +54,7 @@ pub struct Args {
   #[arg(short, long, default_value_t = 10, env = "CONCURRENCY")]
   pub concurrency: usize,
 
-  /// Duration for the test 
+  /// Duration for the test
   #[arg(
     short,
     long,
@@ -69,12 +68,20 @@ pub struct Args {
   #[arg(short, long, default_value_t = 2, env = "THREADS")]
   pub threads: usize,
 
+
+  /// The method to use (default: GET)
+  #[arg(short, long, default_value = "GET", env = "METHOD")]
+  pub method: String,
+
+  /// The body to send with the request use @filename to read from a file
+  #[arg(short, long, env = "BODY")]
+  pub body: Option<String>,
+
   /// Add headers to the request
-  #[arg(short = 'H', long, value_parser, env = "HEADER")]
+  #[arg(short = 'H', long, value_parser, value_delimiter = ',', env = "HEADER")]
   pub header: Vec<String>,
-  
-  
-  /// Timeout for each request 
+
+  /// Timeout for each request
   #[cfg(feature = "timeout")]
   #[arg(
     short = 'u',
@@ -85,7 +92,13 @@ pub struct Args {
   pub timeout: Option<Duration>,
 
   /// Disable keepalive
-  #[arg(short = 'r', long, visible_alias = "dk", default_value_t = false, env = "DISABLE_KEEPALIVE")]
+  #[arg(
+    short = 'r',
+    long,
+    visible_alias = "dk",
+    default_value_t = false,
+    env = "DISABLE_KEEPALIVE"
+  )]
   pub disable_keepalive: bool,
 
   /// Enable latency measurement and reporting
@@ -106,7 +119,6 @@ pub struct Args {
   #[arg(short = 'h', long, action = clap::builder::ArgAction::Help)]
   pub help: (),
 }
-
 
 #[cfg(feature = "tls")]
 #[derive(Clone)]
@@ -133,7 +145,8 @@ pub enum Request<'a> {
   #[cfg(feature = "h2")]
   H2 {
     req: &'a http::Request<()>,
-  },
+    body: Option<&'a bytes::Bytes>,
+  }
 }
 
 #[derive(Clone, Copy)]
@@ -142,8 +155,10 @@ pub struct RunConfig<'a> {
   pub addr: SocketAddr,
   pub threads: usize,
   pub concurrency: usize,
+  pub method: &'a str,
+  pub body_len: usize,
   pub disable_keepalive: bool,
-  #[cfg(feature = "timeout")] 
+  #[cfg(feature = "timeout")]
   pub timeout: Option<Duration>,
   #[cfg(feature = "latency")]
   pub latency: bool,
@@ -159,6 +174,8 @@ impl RunConfig<'static> {
       url,
       threads,
       concurrency,
+      method,
+      body,
       disable_keepalive,
       #[cfg(feature = "timeout")]
       timeout,
@@ -192,10 +209,16 @@ impl RunConfig<'static> {
       .to_string()
       .leak();
 
+    let method: &'static _ = method.trim().to_uppercase().leak();
+    let body_len = match &body {
+      None => 0,
+      Some(body) => body.len(),
+    };
+
     #[cfg(feature = "tls")]
     let tls = match url.scheme() {
       "http" => None,
-      
+
       "https" => {
         cfg_if::cfg_if! {
           if #[cfg(all(feature = "h1", feature = "h2"))] {
@@ -246,13 +269,38 @@ impl RunConfig<'static> {
       .next()
       .with_context(|| format!("socket addresses for {url} resolved to empty list"))?;
 
+    let body = match body {
+      None => None,
+      Some(body) => {
+        if body.starts_with("@") {
+          let path = body.strip_prefix('@').unwrap();
+          let canonical = Path::new(path).canonicalize().with_context(|| format!("error resolving path for {path}"))?;
+          let vec = std::fs::read(path).with_context(|| format!("error reading file from {}", canonical.display()))?;
+          Some(vec)
+        } else {
+          let vec = Vec::from(body);
+          Some(vec)
+        }
+      }
+    };
+
+    let content_length = match &body {
+      None => 0,
+      Some(body) => body.len() as u64,
+    };
+
     #[cfg(feature = "h1")]
     macro_rules! h1_req {
       () => {{
         let buf: &'static _ = {
+          let aux = method.trim().to_uppercase();
+          let aux = http::Method::from_bytes(aux.as_bytes()).with_context(|| format!("invalid method {method}"))?;
+          let method = aux.as_str();
+
           let mut req_lines = vec![
             format!(
-              "GET {}{} HTTP/1.1",
+              "{} {}{} HTTP/1.1",
+              method,
               url.path(),
               match url.query() {
                 Some(query) => format!("?{query}"),
@@ -260,22 +308,25 @@ impl RunConfig<'static> {
               }
             ),
             format!("host: {}", host),
-            "content-length: 0".into(),
+            format!("content-length: {}", content_length),
           ];
 
           for h in header {
-            let (k, v) = h.split_once(':').context("invalid header format, must be key:value")?;
+            let (k, v) = h
+              .split_once(':')
+              .context("invalid header format, must be key:value")?;
             let hk = http::header::HeaderName::from_bytes(k.trim().as_bytes())
               .with_context(|| format!("invalid header name {k}"))?;
-              
+
             let k = hk.as_str();
-            
+
             let hv = http::header::HeaderValue::from_str(v.trim())
               .with_context(|| format!("invalid header value {v}"))?;
-              
-            let v = hv.to_str()
+
+            let v = hv
+              .to_str()
               .with_context(|| format!("invalid header value {v}, only utf-8 is supported"))?;
-           
+
             req_lines.push(format!("{k}: {v}"));
           }
 
@@ -284,7 +335,14 @@ impl RunConfig<'static> {
           }
 
           req_lines.push(String::from("\r\n"));
-          req_lines.join("\r\n").leak().as_bytes()
+          
+          let mut buf = Vec::from(req_lines.join("\r\n"));
+
+          if let Some(body) = body {
+            buf.extend_from_slice(&body);
+          }
+
+          buf.leak()
         };
 
         buf
@@ -294,12 +352,28 @@ impl RunConfig<'static> {
     #[cfg(feature = "h2")]
     macro_rules! h2_req {
       () => {{
+        let bytes = {
+          match body {
+            Some(body) => Some(bytes::Bytes::from(body)),
+            None => None
+          } 
+        };
+
         let req: &'static _ = {
-          let mut req = http::Request::new(());
-          *req.uri_mut() = Uri::from_static(url.to_string().leak());
           
+          let mut req = http::Request::new(());
+          
+          let method = http::Method::from_bytes(method.as_bytes()).with_context(|| format!("invalid method {method}"))?;
+          *req.method_mut() = method;
+
+          *req.uri_mut() = Uri::from_static(url.to_string().leak());
+
+          req.headers_mut().insert(http::header::CONTENT_LENGTH, content_length.to_string().parse().unwrap());
+         
           for h in header {
-            let (k, v) = h.split_once(':').context("invalid header format, must be key:value")?;
+            let (k, v) = h
+              .split_once(':')
+              .context("invalid header format, must be key:value")?;
             let hk = http::header::HeaderName::from_bytes(k.trim().as_bytes())
               .with_context(|| format!("invalid header name {k}"))?;
             let hv = http::header::HeaderValue::from_str(v.trim())
@@ -309,8 +383,11 @@ impl RunConfig<'static> {
 
           Box::leak(Box::new(req))
         };
-        req
-      }}
+
+        let body: &'static _ = Box::leak(Box::new(bytes));
+        let body = body.as_ref();
+        Request::H2 { req, body }
+      }};
     }
 
     cfg_if::cfg_if! {
@@ -318,21 +395,24 @@ impl RunConfig<'static> {
         let request = {
           match h2 {
             false => Request::H1 { buf: h1_req!() },
-            true => Request::H2 { req: h2_req!() },
+            true => h2_req!(),
           }
         };
       } else if #[cfg(feature = "h1")] {
         let request = Request::H1 { buf: h1_req!() };
       } else if #[cfg(feature = "h2")] {
-        let request = Request::H2 { req: h2_req!() };
+        let request = h2_req!();
       } else {
         std::compile_error!("at least one of feature=h1 or feature=h2 must be enabled");
       }
     };
 
+    
     let config = RunConfig::<'static> {
       url,
       addr,
+      method,
+      body_len, 
       threads,
       concurrency,
       disable_keepalive,

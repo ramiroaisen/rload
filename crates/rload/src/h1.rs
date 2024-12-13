@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{error::ErrorKind, status::Statuses};
 
 /// The maximum total size of a request head allowed by the h1 parser
-const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 64;
+const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 128;
 
 /// The maximum headers qty allowed by the h1 parser
 const H1_HTTP_MAX_HEADER_QTY: usize = 128;
@@ -34,8 +34,8 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       Err(_) => return Err(ErrorKind::Write),
     };
 
-    // Safety: we only read the initialized part of the buf
     let mut slice = [MaybeUninit::<u8>::uninit(); H1_HTTP_MAX_RESPONSE_HEAD_SIZE];
+    // Safety: we only read the initialized part of the buf
     let buf = unsafe { assume_init_slice(&mut slice) };
 
     let mut filled_len = 0;
@@ -53,6 +53,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       };
       
       filled_len += n;
+      
       // we override the buf here to avoid use it after this line
       // now the buf is only the filled part
       let buf = &buf[..filled_len];
@@ -69,6 +70,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       config.ignore_invalid_headers_in_responses(true);
       
       // this are for request only
+      // config.ignore_invalid_headers_in_requests(true)
       // config.allow_multiple_spaces_in_request_line_delimiters(true)
 
       let head_len = match config.parse_response_with_uninit_headers(&mut res, buf, &mut headers) {
@@ -82,9 +84,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
         Err(_) => return Err(ErrorKind::Parse),
       };
         
-            
       if let Some(status) = res.code {
-        // Safety: httparse parses status codes as three digit numbers, so the max possible value is 999
         unsafe { statuses.record_unchecked(status) };
       }
 
@@ -163,6 +163,28 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
               Err(_) => return Err(ErrorKind::ReadBody)
             }
 
+          // not chunked nor content-length
+          // but the status code is a "no content" one
+          // so we just continue sending requests without further reading
+          } else if matches!(res.code, Some(100..=199 | 204 | 205 | 300..=399)) {
+            // No content status codes            
+            // 100 Continue
+            // 101 Switching Protocols
+            // 102 Processing
+            // 204 No content
+            // 205 Reset content
+            // 300 Multiple choices
+            // 301 Moved permanently
+            // 302 Found
+            // 303 See other
+            // 304 Not modified
+            // 305 Use proxy
+            // 306 Switch proxy
+            // 307 Temporary redirect
+            // 308 Permanent redirect
+            return Ok(is_keepalive)
+          
+          
           // no chunked encoding nor content-length, consume the response until the end
           // and dispose the connection, as curl does
           } else {
@@ -219,14 +241,20 @@ unsafe fn assume_init_slice<T>(s: &mut [MaybeUninit<T>]) -> &mut [T] {
 
 const SHARED_BUF_LEN: usize = 512 * 1024;
 // Safety: we never read the contents of the slice
+// and we never create a shared reference for it, only mutable references
 static mut SHARED_BUF: [u8; SHARED_BUF_LEN] = [0; SHARED_BUF_LEN];
 
 pub async fn read_to_end<R: AsyncRead + Unpin>(r: &mut R) -> Result<(), std::io::Error> {
   loop {
     match r.read(unsafe { &mut SHARED_BUF[..] }).await {
+      Ok(n) => {
+        if n != 0 {
+          continue;
+        } else {
+          return Ok(())
+        }
+      },
       Err(e) => return Err(e),
-      Ok(0) => return Ok(()),
-      Ok(_) => continue,
     }
   }
 }

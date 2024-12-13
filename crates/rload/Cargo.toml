@@ -25,13 +25,11 @@ clap = { version = "4.5.23", features = ["derive", "env"] }
 http = "1.2.0"
 human_bytes = { version = "0.4.3", default-features = false }
 near-safe-cell = "0.1.5"
-num_cpus = "1.16.0"
 pin-project = "1.1.7"
 regex_static = "0.1.1"
 tokio = { version = "1.42.0", features = ["full"] }
 url = "2.5.4"
 cfg-if = "1.0.0"
-tokio-util = "0.7.13"
 numfmt = "1.1.1"
 shadow-rs = { version = "0.36.0", features = ["cargo_metadata", "document-features", "metadata"] }
 pingora-timeout = "0.4.0"

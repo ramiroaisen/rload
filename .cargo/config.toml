@@ -1,4 +1,3 @@
-# the tokio/tracing optional feature needs the tokio_unstable flag
 [profile.release]
 opt-level = 3
 debug = false

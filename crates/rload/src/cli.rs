@@ -1,9 +1,8 @@
 #[cfg(feature = "latency")]
 use anyhow::Context;
 use clap::Parser;
-use std::thread;
-use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
+use std::{thread, time::Duration};
+use tokio::{sync::watch, time::Instant};
 
 use crate::{
   args::{Args, Request, RunConfig}, error::Errors, http, report::Report, status::Statuses
@@ -30,21 +29,33 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     config.threads, config.concurrency
   );
 
-  let start = Instant::now();
-  let until = start + config.duration;
-
   let mut handles = Vec::with_capacity(config.threads);
-  let cancel = CancellationToken::new();
+
+  // with this signaling to start processing we gain a little in precision of the time measuring
+  let (start_send, start_recv) = watch::channel(());
+
+  let (stop_send, stop_recv) = watch::channel(());
+
 
   for _ in 0..config.threads {
-    let cancel = cancel.clone();
-    let handle = std::thread::spawn(move || crate::run::thread(config, cancel));
+    let start = start_recv.clone();
+    let stop = stop_recv.clone();
+    let handle = std::thread::spawn(move || crate::run::thread(config, start, stop));
     handles.push(handle);
   }
 
-  thread::spawn(move || {
-    watch_cancel(cancel, until);
-  });
+  drop(start_recv);
+
+  let duration = config.duration;
+  let start = thread::spawn(move || {
+    // give the threads time to startup
+    thread::sleep(Duration::from_millis(25));
+    let start = Instant::now();
+    let until = start + duration;
+    start_send.send(()).unwrap();
+    watch_stop(stop_send, until);
+    start
+  }).join().unwrap();
 
   let mut ok = 0;
   let mut err = Errors::new();
@@ -95,7 +106,8 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     address: config.addr,
     http_version,
     keepalive: !config.disable_keepalive,
-
+    method: config.method.into(),
+    body_len: config.body_len,
     ok,
     err,
     read,
@@ -119,12 +131,12 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn watch_cancel(cancel: CancellationToken, until: Instant) {
+async fn watch_stop(stop: watch::Sender<()>, until: Instant) {
   let ctrl_c = tokio::signal::ctrl_c();
   let timer = tokio::time::sleep_until(until);
   tokio::select! {
     _ = ctrl_c => {}
     _ = timer => {}
   };
-  cancel.cancel();
+  let _ = stop.send(());
 }

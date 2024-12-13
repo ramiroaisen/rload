@@ -2,7 +2,7 @@ use crate::{
   args::{Request, RunConfig}, error::{ErrorKind, Errors}, io::CounterStream, status::Statuses
 };
 use near_safe_cell::NearSafeCell;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::watch;
 
 #[derive(Debug, Clone)]
 pub struct ThreadResult {
@@ -29,8 +29,13 @@ impl Default for ThreadResult {
   }
 }
 
+
 #[tokio::main(flavor = "current_thread")]
-pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> ThreadResult {
+pub async fn thread(
+  config: RunConfig<'static>,
+  start: watch::Receiver<()>,
+  stop: watch::Receiver<()>,
+) -> ThreadResult {
   macro_rules! leak {
     ($var:ident = $v:expr) => {
       let $var: &'static _ = Box::leak(Box::new(NearSafeCell::new($v)));
@@ -42,9 +47,13 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
   let conns = (config.concurrency as f64 / config.threads as f64).ceil() as usize;
   let mut handles = Vec::with_capacity(conns);
   for _ in 0..conns {
-    let signal = cancel.clone().cancelled_owned();
+    let mut stop = stop.clone();
+    let mut start = start.clone();
     let task = async move {
       let task = async {
+        
+        start.changed().await.unwrap();
+
         'conn: loop {
           #[cfg(feature = "h1")]
           macro_rules! send_h1_requests {
@@ -103,7 +112,7 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
 
           #[cfg(feature = "h2")]
           macro_rules! send_h2_requests {
-            ($stream:ident, $req:ident) => {{
+            ($stream:ident, $req:ident, $body:ident) => {{
               let (mut h2, conn) = match h2::client::handshake($stream).await {
                 Ok(pair) => pair,
                 Err(_) => {
@@ -128,7 +137,7 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
 
                 match crate::h2::send_request(
                   h2,
-                  || $req.clone(),
+                  || ($req.clone(), $body.cloned()),
                   unsafe { &mut result.get_mut_unsafe().statuses },
                   #[cfg(feature = "timeout")]
                   config.timeout,
@@ -169,15 +178,53 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
             }};
           }
 
-          let stream = match tokio::net::TcpStream::connect(config.addr).await {
-            Ok(stream) => stream,
-            Err(_) => {
-              unsafe {
-                result.get_mut_unsafe().err.record(ErrorKind::Connect);
+          macro_rules! timeout {
+            ($inner:expr, $err:ident) => {{
+              #[cfg(not(feature = "timeout"))]
+              match $inner.await {
+                Ok(stream) => stream,
+                Err(_) => {
+                  unsafe {
+                    result.get_mut_unsafe().err.record(ErrorKind::$err);
+                  }
+                  continue 'conn;
+                }
               }
-              continue 'conn;
-            }
-          };
+
+              #[cfg(feature = "timeout")]
+              match config.timeout {
+                None => match $inner.await {
+                  Ok(stream) => stream,
+                  Err(_) => {
+                    unsafe {
+                      result.get_mut_unsafe().err.record(ErrorKind::$err);
+                    }
+                    continue 'conn;
+                  }
+                }
+
+                Some(timeout) => {
+                  match pingora_timeout::timeout(timeout, $inner).await {
+                    Ok(Ok(stream)) => stream,
+                    Ok(Err(_)) => {
+                      unsafe {
+                        result.get_mut_unsafe().err.record(ErrorKind::$err);
+                      }
+                      continue 'conn;
+                    }
+                    Err(_) => {
+                      unsafe {
+                        result.get_mut_unsafe().err.record(ErrorKind::Timeout);
+                      }
+                      continue 'conn;
+                    }
+                  }
+                }
+              }
+            }};
+          }
+
+          let stream = timeout!(tokio::net::TcpStream::connect(config.addr), Connect);
 
           // Safety: this conters are local to this thread, so is not possible to race
           #[allow(unused_mut)]
@@ -200,8 +247,8 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
                 send_h1_requests!(stream, buf);
               }
               #[cfg(feature = "h2")]
-              Request::H2 { req } => {
-                send_h2_requests!(stream, req);
+              Request::H2 { req, body } => {
+                send_h2_requests!(stream, req, body);
               }
             },
 
@@ -210,31 +257,27 @@ pub async fn thread(config: RunConfig<'static>, cancel: CancellationToken) -> Th
 
             #[cfg(feature = "tls")]
             Some(tls) => {
+
               #[allow(unused_mut)]
-              let mut stream = match tls.connector.connect(tls.server_name.clone(), stream).await {
-                Ok(stream) => stream,
-                Err(_) => {
-                  unsafe {
-                    result.get_mut_unsafe().err.record(ErrorKind::TlsHandshake);
-                  }
-                  continue 'conn;
-                }
-              };
+              let mut stream = timeout!(tls.connector.connect(tls.server_name.clone(), stream), TlsHandshake);
 
               match config.request {
                 #[cfg(feature = "h1")]
                 Request::H1 { buf } => send_h1_requests!(stream, buf),
                 #[cfg(feature = "h2")]
-                Request::H2 { req } => send_h2_requests!(stream, req),
+                Request::H2 { req, body } => send_h2_requests!(stream, req, body),
               }
             }
           }
         }
       };
 
+      
+
       tokio::select! {
+        biased;
         _ = task => {}
-        _ = signal => {}
+        _ = stop.changed() => {}
       }
     };
 
