@@ -2,7 +2,8 @@ use std::mem::MaybeUninit;
 
 use bytes::BytesMut;
 use httparse::{parse_chunk_size, Header, Status};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::rt::{Read, ReadExt, Write, WriteExt};
 
 #[cfg(feature = "error-detail")]
 use crate::error::ErrorKind;
@@ -30,9 +31,10 @@ type SendError = ErrorKind;
 type SendError = ();
 
 #[inline(always)]
-pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
+pub async fn send_request<S: Read + Write + Unpin>(
   stream: &mut S,
-  req_buf: &[u8],
+  // monoio Write trait requires that the buffer is static
+  req_buf: &'static [u8],
   keepalive: bool,
   #[cfg(feature = "status-detail")]
   statuses: &mut Statuses,
@@ -57,18 +59,44 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   }
 
   let inner = async move {
+    #[cfg(feature = "monoio")]
+    match stream.write_all(req_buf).await {
+      (Ok(_), _) => {}
+      (Err(_), _) => return err!(Write),
+    };
+
+    #[cfg(not(feature = "monoio"))]
     match stream.write_all(req_buf).await {
       Ok(()) => {}
       Err(_) => return err!(Write),
     };
 
+    #[cfg(feature = "monoio")]
+    let mut buf = BytesMut::new();
+
+
+    #[cfg(not(feature = "monoio"))]
     let mut slice = [MaybeUninit::<u8>::uninit(); H1_HTTP_MAX_RESPONSE_HEAD_SIZE];
+
+    #[cfg(not(feature = "monoio"))]
     // Safety: we only read the initialized part of the buf
     let buf = unsafe { assume_init_slice(&mut slice) };
+
 
     let mut filled_len = 0;
 
     'read: loop {
+
+      #[cfg(feature = "monoio")]
+      let n = match stream.read(buf).await {
+        (Ok(n), nbuf) => {
+          buf = nbuf;
+          n
+        }
+        (Err(_), _) => return err!(Read),
+      };
+
+      #[cfg(not(feature = "monoio"))]
       // Safety: filled_len can never be greater than buf.len()
       let n = match stream.read(unsafe { buf.get_unchecked_mut(filled_len..) }).await {
         Ok(n) => {
@@ -104,7 +132,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       let head_len = match config.parse_response_with_uninit_headers(&mut res, buf, &mut headers) {
         Ok(httparse::Status::Complete(n)) => n,
         Ok(httparse::Status::Partial) => {
-          if filled_len == H1_HTTP_MAX_RESPONSE_HEAD_SIZE {
+          if filled_len >= H1_HTTP_MAX_RESPONSE_HEAD_SIZE {
             return err!(Parse);
           }
           continue 'read;
@@ -266,6 +294,7 @@ fn header_contains(v: &[u8], needle: &str) -> bool {
   false
 }
 
+#[cfg(not(feature = "monoio"))]
 #[inline(always)]
 unsafe fn assume_init_slice<T>(s: &mut [MaybeUninit<T>]) -> &mut [T] {
   let s: *mut [MaybeUninit<T>] = s;
@@ -273,41 +302,78 @@ unsafe fn assume_init_slice<T>(s: &mut [MaybeUninit<T>]) -> &mut [T] {
   &mut *s
 }
 
+#[cfg(not(feature = "monoio"))]
 const SHARED_BUF_LEN: usize = 512 * 1024;
 // Safety: we never read the contents of the slice
 // and we never create a shared reference for it, only mutable references
+#[cfg(not(feature = "monoio"))]
 static mut SHARED_BUF: [u8; SHARED_BUF_LEN] = [0; SHARED_BUF_LEN];
 
-pub async fn read_to_end<R: AsyncRead + Unpin>(r: &mut R) -> Result<(), std::io::Error> {
+pub async fn read_to_end<R: Read + Unpin>(r: &mut R) -> Result<(), std::io::Error> {
   loop {
-    match r.read(unsafe { &mut SHARED_BUF[..] }).await {
-      Ok(n) => {
-        if n != 0 {
-          continue;
-        } else {
-          return Ok(())
-        }
-      },
-      Err(e) => return Err(e),
+
+    #[cfg(feature = "monoio")]
+    {
+      let buf = vec![];
+      match r.read(buf).await {
+        (Ok(n), _) => {
+          if n != 0 {
+            continue;
+          } else {
+            return Ok(())
+          }
+        },
+        (Err(e), _) => return Err(e),
+      }
+    }
+    
+    #[cfg(not(feature = "monoio"))]
+    {
+      let buf = unsafe { &mut SHARED_BUF[..] };
+      match r.read(buf).await {
+        Ok(n) => {
+          if n != 0 {
+            continue;
+          } else {
+            return Ok(())
+          }
+        },
+        Err(e) => return Err(e),
+      }
     }
   }
 }
 
 
 #[inline(always)]
-async fn read_exact_and_dispose<R: AsyncRead + Unpin>(r: &mut R, mut take: u64) -> Result<(), std::io::Error> {
+async fn read_exact_and_dispose<R: Read + Unpin>(r: &mut R, mut take: u64) -> Result<(), std::io::Error> {
   while take != 0 {
-    let max = take.min(SHARED_BUF_LEN as u64) as usize;
-    let slice = unsafe { &mut SHARED_BUF[..max] };
-    r.read_exact(slice).await?;
-    take -= max as u64
+    
+    #[cfg(feature = "monoio")]
+    let n = {
+      let n = take.min((1024 * 64) as u64) as usize;
+      let buf = Vec::with_capacity(n);
+      r.read_exact(buf).await.0?;
+      n
+    };
+
+    #[cfg(not(feature = "monoio"))]
+    let n = {
+      #[cfg(not(feature = "monoio"))]
+      let max = take.min(SHARED_BUF_LEN as u64) as usize;
+      let slice = unsafe { &mut SHARED_BUF[..max] };
+      r.read_exact(slice).await?;
+      max
+    };
+
+    take -= n as u64
   }
 
   Ok(())
 }
 
 #[inline(always)]
-pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
+pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
   
   let mut buf = BytesMut::from(readed);
   let mut first = true;
@@ -318,6 +384,22 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
     
     #[allow(clippy::bool_comparison)]
     if first == false || buf.len() < MIN_CHUNK_HEAD_LEN { 
+
+      #[cfg(feature = "monoio")]
+      match stream.read(buf).await {
+        (Ok(n), nbuf) => {
+          if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+          }
+          buf = nbuf;
+        }
+
+        (Err(e), _) => {
+          return Err(e);
+        }
+      }
+
+      #[cfg(not(feature = "monoio"))]
       match stream.read_buf(&mut buf).await {
         Ok(n) => {
           if n == 0 {
@@ -383,7 +465,20 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
           continue 'parse;
         }
         
-        stream.read_buf(&mut buf).await?;
+        #[cfg(feature = "monoio")]
+        let n = {
+          let (r, nbuf) = stream.read(buf).await;
+          buf = nbuf;
+          r?
+        };
+
+        #[cfg(not(feature = "monoio"))]
+        let n = stream.read_buf(&mut buf).await?;
+
+        if n == 0 {
+          return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+
         continue 'read_chunk;
       }
     }
@@ -391,7 +486,7 @@ pub async fn consume_chunked_body<R: AsyncRead + Unpin>(stream: &mut R, readed: 
 }
 
 #[inline(always)]
-pub async fn consume_chunked_body_alt1<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
+pub async fn consume_chunked_body_alt1<R: Read + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
   
   let mut buf = BytesMut::from(readed);
   let mut first = true;
@@ -402,6 +497,23 @@ pub async fn consume_chunked_body_alt1<R: AsyncRead + Unpin>(stream: &mut R, rea
     
     #[allow(clippy::bool_comparison)]
     if first == false || buf.len() < MIN_CHUNK_HEAD_LEN { 
+      
+      #[cfg(feature = "monoio")]
+      match stream.read(buf).await {
+        (Ok(n), nbuf) => {
+          if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+          }
+          buf = nbuf;
+        }
+
+        (Err(e), _) => {
+          return Err(e);
+        }
+      }
+
+
+      #[cfg(not(feature = "monoio"))]
       match stream.read_buf(&mut buf).await {
         Ok(n) => {
           if n == 0 {
@@ -470,7 +582,15 @@ pub async fn consume_chunked_body_alt1<R: AsyncRead + Unpin>(stream: &mut R, rea
       buf.clear();
         
       'consume: loop {
-        
+
+        #[cfg(feature = "monoio")]
+        let n = {
+          let (r, nbuf) = stream.read(buf).await;
+          buf = nbuf;
+          r?
+        };
+
+        #[cfg(not(feature = "monoio"))]
         let n = stream.read_buf(&mut buf).await?;
         
         if n == 0 {
@@ -491,90 +611,6 @@ pub async fn consume_chunked_body_alt1<R: AsyncRead + Unpin>(stream: &mut R, rea
         let _ = buf.split_to(to_consume as usize);
         continue 'parse;
       }
-    }
-  }
-}
-
-#[inline(always)]
-pub async fn consume_chunked_body_alt2<R: AsyncRead + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
-
-  let mut buf = BytesMut::from(readed);
-  let mut first = true;
-
-  'read: loop {
-    
-    // const MAX_CHUNK_SIZE_BYTES: u64 = 16 + 2; // 16 is u64::MAX in hex format +2 for the \r\n
-
-    #[allow(clippy::bool_comparison)]
-    if buf.is_empty() || first == false { 
-      match stream.read_buf(&mut buf).await {
-        Ok(n) => {
-          if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-          }
-        }
-
-        Err(e) => {
-          return Err(e);
-        }
-      }
-    }
-
-    first = false;
-
-    'parse: loop {
-
-      let (consumed, size) = match parse_chunk_size(&buf) {
-        // correct parsing of chunk size
-        Ok(Status::Complete((consumed, size))) => (consumed, size),
-
-
-        Ok(Status::Partial) => {
-          // chunk size incomplete, continue reading
-          continue 'read;
-        }
-
-        Err(_) => {
-          // invalid chunk size
-          return Err(std::io::ErrorKind::InvalidData.into())
-        }
-      };
-
-      // last chunk
-      if size == 0 {
-        let expected = consumed + 2; // +2 for the \r\n
-        #[allow(clippy::comparison_chain)]
-        if buf.len() == expected {
-          return Ok(())
-        }
-        
-        if buf.len() < expected {
-          let take = expected - buf.len();
-          read_exact_and_dispose( stream, take as u64).await?;
-          return Ok(())
-        }
-        
-        return Err(std::io::ErrorKind::Other.into());
-      }
-
-      // not last chunk
-      let until = consumed as u64 + size + 2; // +2 is for the \r\n at the end of the chunk
-
-      #[allow(clippy::comparison_chain)]
-        if buf.len() as u64 == until {
-        buf.clear();
-        continue 'read;
-      } 
-      
-      if buf.len() as u64 > until {
-        let _ = buf.split_to(until as usize);
-        continue 'parse;
-      } 
-      
-      let skip = until - buf.len() as u64;
-      read_exact_and_dispose( stream, skip).await?;
-      buf.clear();
-      continue 'read;
     }
   }
 }

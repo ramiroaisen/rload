@@ -13,6 +13,7 @@ pub mod status;
 pub mod run;
 pub mod report;
 pub mod http;
+pub mod rt;
 #[cfg(feature = "h1")]
 pub mod h1;
 #[cfg(feature = "h2")]

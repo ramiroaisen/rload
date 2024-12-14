@@ -2,9 +2,10 @@
 use anyhow::Context;
 use clap::Parser;
 use std::{thread, time::Duration};
-use tokio::{sync::watch, time::Instant};
+use tokio::sync::watch;
 
 use crate::{
+  rt::Instant,
   args::{Args, Request, RunConfig},
   http,
   report::Report,
@@ -173,13 +174,22 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
   Ok(report)
 }
 
+#[cfg(feature = "monoio")]
+#[monoio::main(timer = true)]
+pub async fn watch_stop(stop: watch::Sender<()>, until: Instant) {
+  watch_stop_inner(stop, until).await
+}
+
+#[cfg(not(feature = "monoio"))]
 #[tokio::main(flavor = "current_thread")]
-async fn watch_stop(stop: watch::Sender<()>, until: Instant) {
-  let ctrl_c = tokio::signal::ctrl_c();
-  let timer = tokio::time::sleep_until(until);
-  tokio::select! {
-    _ = ctrl_c => {}
-    _ = timer => {}
+pub async fn watch_stop(stop: watch::Sender<()>, until: Instant) {
+  watch_stop_inner(stop, until).await
+}
+
+async fn watch_stop_inner(stop: watch::Sender<()>, until: Instant) {
+  crate::rt::select! {
+    _ = crate::rt::ctrl_c() => {}
+    _ = crate::rt::sleep_until(until) => {}
   };
   let _ = stop.send(());
 }

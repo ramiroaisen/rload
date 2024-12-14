@@ -52,8 +52,27 @@ impl Default for ThreadResult {
 }
 
 
+#[cfg(feature = "monoio")]
+#[monoio::main(timer = true)]
+pub async fn thread(
+  config: RunConfig<'static>,
+  start: watch::Receiver<()>,
+  stop: watch::Receiver<()>,
+) -> ThreadResult {
+  thread_inner(config, start, stop).await
+}
+
+#[cfg(not(feature = "monoio"))]
 #[tokio::main(flavor = "current_thread")]
 pub async fn thread(
+  config: RunConfig<'static>,
+  start: watch::Receiver<()>,
+  stop: watch::Receiver<()>,
+) -> ThreadResult {
+  thread_inner(config, start, stop).await
+}
+
+pub async fn thread_inner(
   config: RunConfig<'static>,
   start: watch::Receiver<()>,
   stop: watch::Receiver<()>,
@@ -148,7 +167,7 @@ pub async fn thread(
           #[cfg(feature = "h2")]
           macro_rules! send_h2_requests {
             ($stream:ident, $req:ident, $body:ident) => {{
-              let (mut h2, conn) = match h2::client::handshake($stream).await {
+              let (mut h2, conn) = match crate::rt::h2::client::handshake($stream).await {
                 Ok(pair) => pair,
                 Err(_) => {
                   #[cfg(feature = "error-detail")]
@@ -165,7 +184,7 @@ pub async fn thread(
                 }
               };
 
-              tokio::spawn(conn);
+              crate::rt::spawn(conn);
 
               'req: loop {
                 #[cfg(feature = "latency")]
@@ -308,7 +327,7 @@ pub async fn thread(
             }};
           }
 
-          let stream = timeout!(tokio::net::TcpStream::connect(config.addr), Connect);
+          let stream = timeout!(crate::rt::TcpStream::connect(config.addr), Connect);
 
           // Safety: this conters are local to this thread, so is not possible to race
           #[allow(unused_mut)]
@@ -365,12 +384,16 @@ pub async fn thread(
       }
     };
 
-    let handle = tokio::spawn(task);
+    let handle = crate::rt::spawn(task);
 
     handles.push(handle);
   }
 
   for handle in handles {
+    #[cfg(feature = "monoio")]
+    handle.await;
+
+    #[cfg(not(feature = "monoio"))]
     handle.await.unwrap();
   }
 

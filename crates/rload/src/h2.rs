@@ -1,5 +1,4 @@
-use bytes::Bytes; 
-use h2::client::SendRequest;
+use bytes::Bytes;
 
 #[cfg(feature = "error-detail")]
 use crate::error::ErrorKind;
@@ -15,7 +14,7 @@ type SendError = ();
 
 #[inline(always)]
 pub async fn send_request(
-  mut h2: h2::client::SendRequest<Bytes>,
+  mut h2: crate::rt::h2::client::SendRequest<Bytes>,
   // we use a closure to avoid cloning the request in advance
   req: impl Fn() -> (http::Request<()>, Option<Bytes>),
   
@@ -27,7 +26,7 @@ pub async fn send_request(
   
   #[cfg(feature = "timeout")]
   timeout: Option<std::time::Duration>,
-) -> Result<SendRequest<Bytes>, SendError> {
+) -> Result<crate::rt::h2::client::SendRequest<Bytes>, SendError> {
   
   macro_rules! err {
     ($err:ident) => {{
@@ -62,7 +61,7 @@ pub async fn send_request(
         drop(send_stream);
       }
       Some(bytes) => {
-        tokio::spawn(async move {
+        crate::rt::spawn(async move {
           send_stream.reserve_capacity(bytes.len());
           send_stream.send_data(bytes, true)
         });
