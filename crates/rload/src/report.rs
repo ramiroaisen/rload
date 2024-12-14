@@ -151,7 +151,7 @@ impl std::fmt::Display for Report {
       } = self.err;
       
       if total == 0 {
-        writeln!(f, "errors:            0")?;
+        writeln!(f, "errors:             0")?;
       } else {
         writeln!(f, "- Errors")?;
         fn err(f: &mut std::fmt::Formatter<'_>, name: impl std::fmt::Display, count: u64) -> std::fmt::Result { 
@@ -180,7 +180,7 @@ impl std::fmt::Display for Report {
 
     #[cfg(not(feature = "error-detail"))]
     {
-      println!("errors:                {}", self.err_count);  
+      println!("errors:             {}", self.err_count);  
     }
 
   
@@ -198,26 +198,26 @@ impl std::fmt::Display for Report {
     #[cfg(not(feature = "status-detail"))]
     {
       if self.not_ok_status != 0 {
-        println!("not 2xx or 3xx status: {}", self.not_ok_status);
+        println!("not 2xx/3xx status: {}", self.not_ok_status);
       }
     }
 
     writeln!(
       f,
-      "read:                  {} - {}/s",
+      "read:               {} - {}/s",
       human_bytes(self.read as f64),
       human_bytes(self.read as f64 / secs)
     )?;
     writeln!(
       f,
-      "write:                 {} - {}/s",
+      "write:              {} - {}/s",
       human_bytes(self.write as f64),
       human_bytes(self.write as f64 / secs)
     )?;
 
     writeln!(
       f,
-      "requests/sec:          {}",
+      "requests/sec:       {}",
       (self.ok as f64 / secs).round() as u64
     )?;
 

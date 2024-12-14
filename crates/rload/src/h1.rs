@@ -2,6 +2,7 @@ use std::mem::MaybeUninit;
 
 use bytes::BytesMut;
 use httparse::{parse_chunk_size, Header, Status};
+use monoio::buf::{IoBuf, IoBufMut};
 
 use crate::rt::{Read, ReadExt, Write, WriteExt};
 
@@ -302,11 +303,9 @@ unsafe fn assume_init_slice<T>(s: &mut [MaybeUninit<T>]) -> &mut [T] {
   &mut *s
 }
 
-#[cfg(not(feature = "monoio"))]
 const SHARED_BUF_LEN: usize = 512 * 1024;
 // Safety: we never read the contents of the slice
 // and we never create a shared reference for it, only mutable references
-#[cfg(not(feature = "monoio"))]
 static mut SHARED_BUF: [u8; SHARED_BUF_LEN] = [0; SHARED_BUF_LEN];
 
 pub async fn read_to_end<R: Read + Unpin>(r: &mut R) -> Result<(), std::io::Error> {
@@ -314,7 +313,7 @@ pub async fn read_to_end<R: Read + Unpin>(r: &mut R) -> Result<(), std::io::Erro
 
     #[cfg(feature = "monoio")]
     {
-      let buf = vec![];
+      let buf = unsafe { SHARED_BUF.slice_mut_unchecked(..) };
       match r.read(buf).await {
         (Ok(n), _) => {
           if n != 0 {
@@ -349,21 +348,18 @@ pub async fn read_to_end<R: Read + Unpin>(r: &mut R) -> Result<(), std::io::Erro
 async fn read_exact_and_dispose<R: Read + Unpin>(r: &mut R, mut take: u64) -> Result<(), std::io::Error> {
   while take != 0 {
     
+    let n = take.min(SHARED_BUF_LEN as u64) as usize;
+
     #[cfg(feature = "monoio")]
-    let n = {
-      let n = take.min((1024 * 64) as u64) as usize;
-      let buf = Vec::with_capacity(n);
-      r.read_exact(buf).await.0?;
-      n
+    {
+      let slice = unsafe { SHARED_BUF.slice_mut_unchecked(..n) };
+      r.read_exact(slice).await.0?;
     };
 
     #[cfg(not(feature = "monoio"))]
-    let n = {
-      #[cfg(not(feature = "monoio"))]
-      let max = take.min(SHARED_BUF_LEN as u64) as usize;
+    {
       let slice = unsafe { &mut SHARED_BUF[..max] };
       r.read_exact(slice).await?;
-      max
     };
 
     take -= n as u64
@@ -480,136 +476,6 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
         }
 
         continue 'read_chunk;
-      }
-    }
-  }
-}
-
-#[inline(always)]
-pub async fn consume_chunked_body_alt1<R: Read + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
-  
-  let mut buf = BytesMut::from(readed);
-  let mut first = true;
-
-  'read: loop {
-
-    const MIN_CHUNK_HEAD_LEN: usize = 3; // this account for one digit and \r\n. Example: 0\r\n
-    
-    #[allow(clippy::bool_comparison)]
-    if first == false || buf.len() < MIN_CHUNK_HEAD_LEN { 
-      
-      #[cfg(feature = "monoio")]
-      match stream.read(buf).await {
-        (Ok(n), nbuf) => {
-          if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-          }
-          buf = nbuf;
-        }
-
-        (Err(e), _) => {
-          return Err(e);
-        }
-      }
-
-
-      #[cfg(not(feature = "monoio"))]
-      match stream.read_buf(&mut buf).await {
-        Ok(n) => {
-          if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-          }
-        }
-
-        Err(e) => {
-          return Err(e);
-        }
-      }
-    }
-
-    first = false;
-
-    'parse: loop {
-
-      let (consumed, size) = match parse_chunk_size(&buf) {
-        // correct parsing of chunk size
-        Ok(Status::Complete((consumed, size))) => (consumed, size),
-
-
-        Ok(Status::Partial) => {
-          // chunk size incomplete, continue reading
-          continue 'read;
-        }
-
-        Err(_) => {
-          // invalid chunk size
-          return Err(std::io::ErrorKind::InvalidData.into())
-        }
-      };
-
-      // last chunk
-      if size == 0 {
-        let expected = consumed + 2; // +2 for the \r\n
-        
-        if buf.len() == expected {
-          return Ok(())
-        } 
-        
-        if buf.len() < expected {
-          let take = expected - buf.len();
-          read_exact_and_dispose( stream, take as u64).await?;
-          return Ok(())
-        }
-        
-        return Err(std::io::ErrorKind::Other.into());
-      }
-
-      // not last chunk
-      let until = consumed as u64 + size + 2; // +2 is for the \r\n at the end of the chunk
-      
-      #[allow(clippy::comparison_chain)]
-      if buf.len() as u64 == until {
-        buf.clear();
-        continue 'read;
-      } 
-        
-      if buf.len() as u64 > until {
-        let _ = buf.split_to(until as usize);
-        continue 'parse;
-      }
-
-      let mut to_consume = until - buf.len() as u64;
-      buf.clear();
-        
-      'consume: loop {
-
-        #[cfg(feature = "monoio")]
-        let n = {
-          let (r, nbuf) = stream.read(buf).await;
-          buf = nbuf;
-          r?
-        };
-
-        #[cfg(not(feature = "monoio"))]
-        let n = stream.read_buf(&mut buf).await?;
-        
-        if n == 0 {
-          return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-
-        if n as u64 == to_consume {
-          buf.clear();
-          continue 'read;
-        }
-
-        if (n as u64) < to_consume {
-          to_consume -= n as u64;
-          buf.clear();
-          continue 'consume;
-        }
-
-        let _ = buf.split_to(to_consume as usize);
-        continue 'parse;
       }
     }
   }

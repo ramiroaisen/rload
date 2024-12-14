@@ -7,7 +7,7 @@ default-run = "rload"
 
 [features]
 default = [ "full" ]
-full = [ "h1", "h2", "tls", "timeout", "latency", "error-detail", "status-detail" ]
+full = [ "h1", "h2", "tls", "timeout", "latency", "error-detail", "status-detail", "monoio" ]
 h1 = [ "dep:httparse" ]
 h2 = [ "dep:h2" ]
 tls = [ "dep:rustls", "dep:tokio-rustls" ]
