@@ -95,7 +95,7 @@ pub struct Args {
   #[arg(
     short = 'r',
     long,
-    visible_alias = "dk",
+    visible_alias = "no-k",
     default_value_t = false,
     env = "DISABLE_KEEPALIVE"
   )]
@@ -106,7 +106,7 @@ pub struct Args {
   #[arg(short = 'l', long, default_value_t = false, env = "LATENCY")]
   pub latency: bool,
 
-  /// Use h2 protocol
+  /// Use http2 protocol
   #[cfg(all(feature = "h1", feature = "h2"))]
   #[arg(short = '2', long, default_value_t = false, env = "H2")]
   pub h2: bool,

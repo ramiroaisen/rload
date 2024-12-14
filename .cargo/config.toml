@@ -12,5 +12,5 @@ debug-assertions = false
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-Ctarget-cpu=native"]
 
-# [unstable]
-# build-std = ["core", "alloc", "std", "panic_abort"]
+[unstable]
+build-std = ["core", "alloc", "std", "panic_abort"]

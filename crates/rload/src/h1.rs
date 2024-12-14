@@ -4,7 +4,11 @@ use bytes::BytesMut;
 use httparse::{parse_chunk_size, Header, Status};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{error::ErrorKind, status::Statuses};
+#[cfg(feature = "error-detail")]
+use crate::error::ErrorKind;
+
+#[cfg(feature = "status-detail")]
+use crate::status::Statuses;
 
 /// The maximum total size of a request head allowed by the h1 parser
 const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 128;
@@ -19,19 +23,43 @@ const TRANSFER_ENCODING: &str = "transfer-encoding";
 const CHUNKED: &str = "chunked";
 const COMMA: u8 = b',';
 
+#[cfg(feature = "error-detail")]
+type SendError = ErrorKind;
+
+#[cfg(not(feature = "error-detail"))]
+type SendError = ();
+
 #[inline(always)]
 pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
   stream: &mut S,
   req_buf: &[u8],
   keepalive: bool,
+  #[cfg(feature = "status-detail")]
   statuses: &mut Statuses,
+  #[cfg(not(feature = "status-detail"))]
+  not_ok_status: &mut u64,
   #[cfg(feature = "timeout")]
   timeout: Option<std::time::Duration>,
-) -> Result<bool, ErrorKind> {
+) -> Result<bool, SendError> {
+  
+  macro_rules! err {
+    ($err:ident) => {{
+      #[cfg(feature = "error-detail")]
+      {
+        Err(SendError::$err)
+      }
+    
+      #[cfg(not(feature = "error-detail"))]
+      {
+        Err(())
+      }
+    }}
+  }
+
   let inner = async move {
     match stream.write_all(req_buf).await {
       Ok(()) => {}
-      Err(_) => return Err(ErrorKind::Write),
+      Err(_) => return err!(Write),
     };
 
     let mut slice = [MaybeUninit::<u8>::uninit(); H1_HTTP_MAX_RESPONSE_HEAD_SIZE];
@@ -45,11 +73,11 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
       let n = match stream.read(unsafe { buf.get_unchecked_mut(filled_len..) }).await {
         Ok(n) => {
           if n == 0 {
-            return Err(ErrorKind::Read)
+            return err!(Read)
           } 
           n
         }
-        Err(_) => return Err(ErrorKind::Read),
+        Err(_) => return err!(Read),
       };
       
       filled_len += n;
@@ -77,15 +105,21 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
         Ok(httparse::Status::Complete(n)) => n,
         Ok(httparse::Status::Partial) => {
           if filled_len == H1_HTTP_MAX_RESPONSE_HEAD_SIZE {
-            return Err(ErrorKind::Parse);
+            return err!(Parse);
           }
           continue 'read;
         }
-        Err(_) => return Err(ErrorKind::Parse),
+        Err(_) => return err!(Parse),
       };
         
       if let Some(status) = res.code {
+        #[cfg(feature = "status-detail")]
         unsafe { statuses.record_unchecked(status) };
+        
+        #[cfg(not(feature = "status-detail"))]
+        if !matches!(status, 200..=399) {
+          *not_ok_status += 1;
+        }
       }
 
       let is_keepalive = 'k: {
@@ -113,12 +147,12 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 
           let str = match std::str::from_utf8(h.value) {
             Ok(str) => str,
-            Err(_) => return Err(ErrorKind::Parse),
+            Err(_) => return err!(Parse),
           };
 
           let len = match str.parse::<u64>() {
             Ok(v) => v,
-            Err(_) => return Err(ErrorKind::Parse),
+            Err(_) => return err!(Parse),
           };
 
           break 'content_length Some(len);
@@ -138,7 +172,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
 
           match read_exact_and_dispose(stream, to_read).await {
             Ok(()) => return Ok(is_keepalive),
-            Err(_) => return Err(ErrorKind::ReadBody)
+            Err(_) => return err!(ReadBody)
           }
         }
 
@@ -160,7 +194,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
             // Safety: head_len could never overflow the buf len
             match consume_chunked_body(stream, unsafe { buf.get_unchecked(head_len..) }).await {
               Ok(()) => return Ok(is_keepalive),
-              Err(_) => return Err(ErrorKind::ReadBody)
+              Err(_) => return err!(ReadBody)
             }
 
           // not chunked nor content-length
@@ -190,7 +224,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
           } else {
             match read_to_end(stream).await {
               Ok(()) => return Ok(false),
-              Err(_) => return Err(ErrorKind::ReadBody)
+              Err(_) => return err!(ReadBody)
             }
           }
         }
@@ -210,7 +244,7 @@ pub async fn send_request<S: AsyncRead + AsyncWrite + Unpin>(
         // note that pingora timeouts will ceil to the next 10ms
         match pingora_timeout::timeout(timeout, inner).await {
           Ok(r) => r,
-          Err(_) => Err(ErrorKind::Timeout)
+          Err(_) => err!(Timeout)
         }
       }
 

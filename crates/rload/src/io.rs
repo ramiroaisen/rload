@@ -21,6 +21,9 @@ impl<'a, S> CounterStream<'a, S> {
   }
 }
 
+
+
+
 impl<S: AsyncRead> AsyncRead for CounterStream<'_, S> {
   #[inline(always)]
   fn poll_read(
@@ -93,5 +96,61 @@ impl<S: AsyncWrite> AsyncWrite for CounterStream<'_, S> {
   #[inline(always)]
   fn is_write_vectored(&self) -> bool {
     self.inner.is_write_vectored()
+  }
+}
+
+
+#[cfg(feature = "monoio")]
+impl<S: monoio::io::AsyncReadRent> monoio::io::AsyncReadRent for CounterStream<'_, S> {
+  async fn read<T: monoio::buf::IoBufMut>(&mut self, buf: T) -> monoio::BufResult<usize, T> {
+    match self.inner.read(buf).await {
+      (Ok(n), buf) => {
+        *self.read += n as u64;
+        (Ok(n), buf)
+      }
+      other => other,
+    }
+  }
+
+  async fn readv<T: monoio::buf::IoVecBufMut>(&mut self, buf: T) -> monoio::BufResult<usize, T> {
+    match self.inner.readv(buf).await {
+      (Ok(n), buf) => {
+        *self.read += n as u64;
+        (Ok(n), buf)
+      }
+      other => other,
+    }
+  }
+}
+
+
+#[cfg(feature = "monoio")]
+impl<S: monoio::io::AsyncWriteRent> monoio::io::AsyncWriteRent for CounterStream<'_, S> {
+  async fn write<T: monoio::buf::IoBuf>(&mut self, buf: T) -> monoio::BufResult<usize, T> {
+    match self.inner.write(buf).await {
+      (Ok(n), buf) => {
+        *self.write += n as u64;
+        (Ok(n), buf)
+      }
+      other => other,
+    }
+  }
+
+  async fn writev<T: monoio::buf::IoVecBuf>(&mut self, buf: T) -> monoio::BufResult<usize, T> {
+    match self.inner.writev(buf).await {
+      (Ok(n), buf) => {
+        *self.write += n as u64;
+        (Ok(n), buf)
+      }
+      other => other,
+    }
+  } 
+
+  async fn flush(&mut self) -> std::io::Result<()> {
+    self.inner.flush().await
+  }
+
+  async fn shutdown(&mut self) -> std::io::Result<()> {
+    self.inner.shutdown().await
   }
 }

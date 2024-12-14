@@ -1,6 +1,11 @@
-use crate::{
-  args::{Request, RunConfig}, error::{ErrorKind, Errors}, io::CounterStream, status::Statuses
-};
+use crate::{args::{Request, RunConfig}, io::CounterStream};
+
+#[cfg(feature = "error-detail")]
+use crate::error::{ErrorKind, Errors};
+
+#[cfg(feature = "status-detail")]
+use crate::status::Statuses;
+
 use near_safe_cell::NearSafeCell;
 use tokio::sync::watch;
 
@@ -11,8 +16,16 @@ pub struct ThreadResult {
   pub write: u64,
   #[cfg(feature = "latency")]
   pub hdr: hdrhistogram::Histogram<u64>,
+
+  #[cfg(feature = "error-detail")]
   pub err: Errors,
+  #[cfg(not(feature = "error-detail"))]
+  pub err_count: u64,
+
+  #[cfg(feature = "status-detail")]
   pub statuses: Statuses,
+  #[cfg(not(feature = "status-detail"))]
+  pub not_ok_status: u64,
 }
 
 impl Default for ThreadResult {
@@ -23,8 +36,17 @@ impl Default for ThreadResult {
       write: 0,
       #[cfg(feature = "latency")]
       hdr: hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram"),
+      
+      #[cfg(feature = "error-detail")]
       err: Errors::new(),
+      #[cfg(not(feature = "error-detail"))]
+      err_count: 0,
+
+
+      #[cfg(feature = "status-detail")]
       statuses: Statuses::new(),
+      #[cfg(not(feature = "status-detail"))]
+      not_ok_status: 0,
     }
   }
 }
@@ -72,7 +94,13 @@ pub async fn thread(
                   &mut $stream,
                   $buf,
                   !config.disable_keepalive,
+
+                  #[cfg(feature = "status-detail")]
                   unsafe { &mut result.get_mut_unsafe().statuses },
+                 
+                  #[cfg(not(feature = "status-detail"))]
+                  unsafe { &mut result.get_mut_unsafe().not_ok_status },
+
                   #[cfg(feature = "timeout")]
                   config.timeout,
                 )
@@ -98,11 +126,18 @@ pub async fn thread(
                       continue 'req;
                     }
                   }
-
+                  #[allow(unused)]
                   Err(e) => {
+                    #[cfg(feature = "error-detail")]
                     unsafe {
                       result.get_mut_unsafe().err.record(e);
                     }
+
+                    #[cfg(not(feature = "error-detail"))]
+                    unsafe {
+                      result.get_mut_unsafe().err_count += 1;
+                    }
+
                     continue 'conn;
                   }
                 }
@@ -116,9 +151,16 @@ pub async fn thread(
               let (mut h2, conn) = match h2::client::handshake($stream).await {
                 Ok(pair) => pair,
                 Err(_) => {
+                  #[cfg(feature = "error-detail")]
                   unsafe {
                     result.get_mut_unsafe().err.record(ErrorKind::H2Handshake);
                   }
+
+                  #[cfg(not(feature = "error-detail"))]
+                  unsafe {
+                    result.get_mut_unsafe().err_count += 1;
+                  }
+
                   continue 'conn;
                 }
               };
@@ -138,7 +180,13 @@ pub async fn thread(
                 match crate::h2::send_request(
                   h2,
                   || ($req.clone(), $body.cloned()),
+
+                  #[cfg(feature = "status-detail")]
                   unsafe { &mut result.get_mut_unsafe().statuses },
+
+                  #[cfg(not(feature = "status-detail"))]
+                  unsafe { &mut result.get_mut_unsafe().not_ok_status },
+
                   #[cfg(feature = "timeout")]
                   config.timeout,
                 )
@@ -167,10 +215,18 @@ pub async fn thread(
                     }
                   }
 
+                  #[allow(unused)]
                   Err(e) => {
+                    #[cfg(feature = "error-detail")]
                     unsafe {
                       result.get_mut_unsafe().err.record(e);
                     }
+
+                    #[cfg(not(feature = "error-detail"))]
+                    unsafe {
+                      result.get_mut_unsafe().err_count += 1;
+                    }
+
                     continue 'conn;
                   }
                 }
@@ -184,9 +240,16 @@ pub async fn thread(
               match $inner.await {
                 Ok(stream) => stream,
                 Err(_) => {
+                  #[cfg(feature = "error-detail")]
                   unsafe {
                     result.get_mut_unsafe().err.record(ErrorKind::$err);
                   }
+
+                  #[cfg(not(feature = "error-detail"))]
+                  unsafe {
+                    result.get_mut_unsafe().err_count += 1;
+                  }
+
                   continue 'conn;
                 }
               }
@@ -196,9 +259,16 @@ pub async fn thread(
                 None => match $inner.await {
                   Ok(stream) => stream,
                   Err(_) => {
+                    #[cfg(feature = "error-detail")]
                     unsafe {
                       result.get_mut_unsafe().err.record(ErrorKind::$err);
                     }
+
+                    #[cfg(not(feature = "error-detail"))]
+                    unsafe {
+                      result.get_mut_unsafe().err_count += 1;
+                    }
+
                     continue 'conn;
                   }
                 }
@@ -207,15 +277,29 @@ pub async fn thread(
                   match pingora_timeout::timeout(timeout, $inner).await {
                     Ok(Ok(stream)) => stream,
                     Ok(Err(_)) => {
+                      #[cfg(feature = "error-detail")]
                       unsafe {
                         result.get_mut_unsafe().err.record(ErrorKind::$err);
                       }
+
+                      #[cfg(not(feature = "error-detail"))]
+                      unsafe {
+                        result.get_mut_unsafe().err_count += 1;
+                      }
+
                       continue 'conn;
                     }
                     Err(_) => {
+                      #[cfg(feature = "error-detail")]
                       unsafe {
                         result.get_mut_unsafe().err.record(ErrorKind::Timeout);
                       }
+
+                      #[cfg(not(feature = "error-detail"))]
+                      unsafe {
+                        result.get_mut_unsafe().err_count += 1;
+                      }
+
                       continue 'conn;
                     }
                   }

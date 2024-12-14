@@ -5,8 +5,16 @@ use std::{thread, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
 use crate::{
-  args::{Args, Request, RunConfig}, error::Errors, http, report::Report, status::Statuses
+  args::{Args, Request, RunConfig},
+  http,
+  report::Report,
 };
+
+#[cfg(feature = "status-detail")]
+use crate::status::Statuses;
+
+#[cfg(feature = "error-detail")]
+use crate::error::Errors;
 
 pub fn run() -> Result<Report, anyhow::Error> {
   let args = Args::parse();
@@ -36,7 +44,6 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
 
   let (stop_send, stop_recv) = watch::channel(());
 
-
   for _ in 0..config.threads {
     let start = start_recv.clone();
     let stop = stop_recv.clone();
@@ -55,13 +62,25 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     start_send.send(()).unwrap();
     watch_stop(stop_send, until);
     start
-  }).join().unwrap();
+  })
+  .join()
+  .unwrap();
 
   let mut ok = 0;
-  let mut err = Errors::new();
   let mut read = 0;
   let mut write = 0;
+
+  #[cfg(feature = "error-detail")]
+  let mut err = Errors::new();
+
+  #[cfg(not(feature = "error-detail"))]
+  let mut err_count = 0;
+
+  #[cfg(feature = "status-detail")]
   let mut statuses = Statuses::new();
+
+  #[cfg(not(feature = "status-detail"))]
+  let mut not_ok_status = 0;
 
   #[cfg(feature = "latency")]
   let mut hdr = hdrhistogram::Histogram::<u64>::new(5).expect("error creating latency histogram");
@@ -74,10 +93,25 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
 
   for t in results {
     ok += t.ok;
-    err.join(t.err);
     read += t.read;
     write += t.write;
+
+    #[cfg(feature = "error-detail")]
+    err.join(t.err);
+
+    #[cfg(not(feature = "error-detail"))]
+    {
+      err_count += t.err_count;
+    }
+
+    #[cfg(feature = "status-detail")]
     statuses.join(t.statuses);
+
+    #[cfg(not(feature = "status-detail"))]
+    {
+      not_ok_status += t.not_ok_status;
+    }
+
     #[cfg(feature = "latency")]
     {
       if config.latency {
@@ -109,10 +143,19 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
     method: config.method.into(),
     body_len: config.body_len,
     ok,
-    err,
     read,
     write,
+    
+    #[cfg(feature = "error-detail")]
+    err,
+    #[cfg(not(feature = "error-detail"))]
+    err_count,
+    
+    #[cfg(feature = "status-detail")]
     statuses: statuses.iter().collect(),
+
+    #[cfg(not(feature = "status-detail"))]
+    not_ok_status,
 
     threads: config.threads,
     concurrency: config.concurrency,

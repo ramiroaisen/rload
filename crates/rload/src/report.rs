@@ -1,8 +1,11 @@
-use std::{fmt::Display, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 use human_bytes::human_bytes;
 use url::Url;
 
-use crate::{error::{ErrorKind, Errors}, fmt::format_duration};
+use crate::fmt::format_duration;
+
+#[cfg(feature = "error-detail")]
+use crate::error::{ErrorKind, Errors};
 
 #[derive(Debug, Clone)]
 pub struct Report {
@@ -22,10 +25,20 @@ pub struct Report {
   pub timeout: Option<Duration>,
 
   pub ok: u64,
-  pub err: Errors,
   pub read: u64,
   pub write: u64,
+  
+  #[cfg(feature = "error-detail")]
+  pub err: Errors,
+
+  #[cfg(not(feature = "error-detail"))]
+  pub err_count: u64,
+
+  #[cfg(feature = "status-detail")]
   pub statuses: Vec<(u16, u64)>,
+  
+  #[cfg(not(feature = "status-detail"))]
+  pub not_ok_status: u64,
 
   #[cfg(feature = "latency")]
   pub hdr: Option<hdrhistogram::Histogram<u64>>,
@@ -41,7 +54,7 @@ impl std::fmt::Display for Report {
 ,      )?;
     } else {
       write!(f,
-        " {} requests in {}. {} read, {} write",
+        " {} requests in {}, {} read, {} write",
         self.ok,
         format_duration(self.elapsed),
         human_bytes(self.read as f64),
@@ -114,10 +127,12 @@ impl std::fmt::Display for Report {
     writeln!(f, "==========| Result |=========")?;
     writeln!(
       f,
-      "elapsed:           {}",
+      "elapsed:               {}",
       crate::fmt::format_duration(self.elapsed)
     )?;
-    writeln!(f, "fulfilled:         {}", self.ok)?;
+    writeln!(f, "fulfilled:             {}", self.ok)?;
+    
+    #[cfg(feature = "error-detail")]
     {
       let total= self.err.total();
       let Errors {
@@ -139,7 +154,7 @@ impl std::fmt::Display for Report {
         writeln!(f, "errors:            0")?;
       } else {
         writeln!(f, "- Errors")?;
-        fn err(f: &mut std::fmt::Formatter<'_>, name: impl Display, count: u64) -> std::fmt::Result { 
+        fn err(f: &mut std::fmt::Formatter<'_>, name: impl std::fmt::Display, count: u64) -> std::fmt::Result { 
           if count != 0 {
             writeln!(f, "  · {: <15}{}", format!("{}:", name), count)?;
           }
@@ -163,30 +178,46 @@ impl std::fmt::Display for Report {
       }
     }
 
-    let has_non_200 = self.statuses.iter().any(|(status, _)| *status != 200);
-    if has_non_200 {
-      writeln!(f, "- Status codes")?;
-      for (status, count) in self.statuses.iter() {
-        writeln!(f, "  · {}: {}", status, count)?;
+    #[cfg(not(feature = "error-detail"))]
+    {
+      println!("errors:                {}", self.err_count);  
+    }
+
+  
+    #[cfg(feature = "status-detail")]
+    {
+      let has_non_200 = self.statuses.iter().any(|(status, _)| *status != 200);
+      if has_non_200 {
+        writeln!(f, "- Status codes")?;
+        for (status, count) in self.statuses.iter() {
+          writeln!(f, "  · {}: {}", status, count)?;
+        }
+      }
+    }
+
+    #[cfg(not(feature = "status-detail"))]
+    {
+      if self.not_ok_status != 0 {
+        println!("not 2xx or 3xx status: {}", self.not_ok_status);
       }
     }
 
     writeln!(
       f,
-      "read:              {} - {}/s",
+      "read:                  {} - {}/s",
       human_bytes(self.read as f64),
       human_bytes(self.read as f64 / secs)
     )?;
     writeln!(
       f,
-      "write:             {} - {}/s",
+      "write:                 {} - {}/s",
       human_bytes(self.write as f64),
       human_bytes(self.write as f64 / secs)
     )?;
 
     writeln!(
       f,
-      "requests/sec:      {}",
+      "requests/sec:          {}",
       (self.ok as f64 / secs).round() as u64
     )?;
 
