@@ -1,17 +1,23 @@
+
+use strum::{EnumCount, EnumIter};
 #[derive(Debug, Clone, Copy)]
+pub struct Errors([u64; ErrorKind::COUNT]);
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, EnumIter, EnumCount)]
 pub enum ErrorKind {
-  Connect,
-  TlsHandshake,
-  Read,
-  ReadBody,
-  Write,
-  Parse,
-  Timeout,
-  H2Handshake,
-  H2Ready,
-  H2Send,
-  H2Recv,
-  H2Body,
+  Connect = 0,
+  TlsHandshake = 1,
+  Read = 2,
+  ReadBody = 3,
+  Write = 4,
+  Parse = 5,
+  Timeout = 6,
+  H2Handshake = 7,
+  H2Ready = 8,
+  H2Send = 9,
+  H2Recv = 10,
+  H2Body = 11,
 }
 
 impl std::fmt::Display for ErrorKind {
@@ -33,118 +39,43 @@ impl std::fmt::Display for ErrorKind {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Errors {
-  pub connect: u64,
-  pub tls_handshake: u64,
-  pub read: u64,
-  pub read_body: u64,
-  pub write: u64,
-  pub parse: u64,
-  pub h2_handshake: u64,
-  pub h2_ready: u64,
-  pub h2_send: u64,
-  pub h2_recv: u64,
-  pub h2_body: u64,
-  pub timeout: u64,
-}
-
 impl Errors {
   #[inline(always)]
   pub const fn new() -> Self {
-    Self {
-      connect: 0,
-      tls_handshake: 0,
-      read_body: 0,
-      read: 0,
-      write: 0,
-      parse: 0,
-      h2_handshake: 0,
-      h2_ready: 0,
-      h2_send: 0,
-      h2_recv: 0,
-      h2_body: 0,
-      timeout: 0,
+    Self([0;ErrorKind::COUNT])
+  }
+
+  #[inline(always)]
+  pub fn get(&self, item: ErrorKind) -> u64 {
+    let index = item as usize;
+    debug_assert!(index < self.0.len());
+    unsafe {
+      *self.0.get_unchecked(index)
     }
   }
 
   #[inline(always)]
   pub fn record(&mut self, item: ErrorKind) {
-    match item {
-      ErrorKind::Connect => self.connect += 1,
-      ErrorKind::TlsHandshake => self.tls_handshake += 1,
-      ErrorKind::Read => self.read += 1,
-      ErrorKind::ReadBody => self.read_body += 1,
-      ErrorKind::Write => self.write += 1,
-      ErrorKind::Parse => self.parse += 1,
-      ErrorKind::Timeout => self.timeout += 1,
-      ErrorKind::H2Handshake => self.h2_handshake += 1,
-      ErrorKind::H2Ready => self.h2_ready += 1,
-      ErrorKind::H2Send => self.h2_send += 1,
-      ErrorKind::H2Recv => self.h2_recv += 1,
-      ErrorKind::H2Body => self.h2_body += 1,
+    let index = item as usize;
+    debug_assert!(index < self.0.len());
+    unsafe {
+      *self.0.get_unchecked_mut(index) += 1;
     }
   }
 
   #[inline(always)]
   pub fn join(&mut self, other: Self) {
-    let Self {
-      connect,
-      tls_handshake,
-      read_body,
-      read,
-      write,
-      parse,
-      h2_handshake,
-      h2_ready,
-      h2_send,
-      h2_recv,
-      h2_body,
-      timeout,
-    } = other;
-
-    self.connect += connect;
-    self.tls_handshake += tls_handshake;
-    self.read_body += read_body;
-    self.read += read;
-    self.write += write;
-    self.parse += parse;
-    self.h2_handshake += h2_handshake;
-    self.h2_ready += h2_ready;
-    self.h2_send += h2_send;
-    self.h2_recv += h2_recv;    
-    self.h2_body += h2_body;
-    self.timeout += timeout;
+    for (i, item) in other.0.into_iter().enumerate() {
+      let index = i;
+      debug_assert!(index < self.0.len());
+      unsafe {
+        *self.0.get_unchecked_mut(index) += item;
+      }
+    }
   }
 
   pub fn total(self) -> u64 {
-    let Self {
-      connect,
-      tls_handshake,
-      read_body,
-      read,
-      write,
-      parse,
-      h2_handshake,
-      h2_ready,
-      h2_send,
-      h2_recv,
-      h2_body,
-      timeout,
-    } = self;
-
-    connect
-      + tls_handshake
-      + read_body
-      + read
-      + write
-      + parse
-      + h2_handshake
-      + h2_ready
-      + h2_send
-      + h2_recv
-      + h2_body 
-      + timeout
+    self.0.iter().sum()
   }
 }
 
@@ -154,6 +85,3 @@ impl Default for Errors {
     Self::new()
   }
 }
-
-
-

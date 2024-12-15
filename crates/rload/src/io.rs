@@ -1,6 +1,5 @@
 use std::task::{Context, Poll};
 use pin_project::pin_project;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[pin_project]
 #[derive(Debug)]
@@ -21,15 +20,12 @@ impl<'a, S> CounterStream<'a, S> {
   }
 }
 
-
-
-
-impl<S: AsyncRead> AsyncRead for CounterStream<'_, S> {
+impl<S: tokio::io::AsyncRead> tokio::io::AsyncRead for CounterStream<'_, S> {
   #[inline(always)]
   fn poll_read(
     self: std::pin::Pin<&mut Self>,
     cx: &mut Context<'_>,
-    buf: &mut ReadBuf<'_>,
+    buf: &mut tokio::io::ReadBuf<'_>,
   ) -> Poll<std::io::Result<()>> {
     let mut me = self.project();
     match me.inner.as_mut().poll_read(cx, buf) {
@@ -44,7 +40,7 @@ impl<S: AsyncRead> AsyncRead for CounterStream<'_, S> {
   }
 }
 
-impl<S: AsyncWrite> AsyncWrite for CounterStream<'_, S> {
+impl<S: tokio::io::AsyncWrite> tokio::io::AsyncWrite for CounterStream<'_, S> {
   #[inline(always)]
   fn poll_write(
     self: std::pin::Pin<&mut Self>,
@@ -122,7 +118,6 @@ impl<S: monoio::io::AsyncReadRent> monoio::io::AsyncReadRent for CounterStream<'
     }
   }
 }
-
 
 #[cfg(feature = "monoio")]
 impl<S: monoio::io::AsyncWriteRent> monoio::io::AsyncWriteRent for CounterStream<'_, S> {

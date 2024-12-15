@@ -175,7 +175,7 @@ pub fn run_with_config(config: RunConfig<'static>) -> Result<Report, anyhow::Err
 }
 
 #[cfg(feature = "monoio")]
-#[monoio::main(timer = true)]
+#[monoio::main(driver = "legacy", timer = true)]
 pub async fn watch_stop(stop: watch::Sender<()>, until: Instant) {
   watch_stop_inner(stop, until).await
 }

@@ -1,8 +1,8 @@
 use std::mem::MaybeUninit;
-
 use bytes::BytesMut;
 use httparse::{parse_chunk_size, Header, Status};
-use monoio::buf::{IoBuf, IoBufMut};
+#[cfg(feature = "monoio")]
+use monoio::buf::IoBufMut;
 
 use crate::rt::{Read, ReadExt, Write, WriteExt};
 
@@ -72,43 +72,43 @@ pub async fn send_request<S: Read + Write + Unpin>(
       Err(_) => return err!(Write),
     };
 
-    #[cfg(feature = "monoio")]
-    let mut buf = BytesMut::new();
-
-
-    #[cfg(not(feature = "monoio"))]
-    let mut slice = [MaybeUninit::<u8>::uninit(); H1_HTTP_MAX_RESPONSE_HEAD_SIZE];
-
-    #[cfg(not(feature = "monoio"))]
-    // Safety: we only read the initialized part of the buf
-    let buf = unsafe { assume_init_slice(&mut slice) };
-
+    #[allow(unused_mut)]
+    let mut buf = [MaybeUninit::<u8>::uninit(); H1_HTTP_MAX_RESPONSE_HEAD_SIZE];
+        
+    cfg_if::cfg_if! {
+      if #[cfg(feature = "monoio")] {
+        let buf: [u8; H1_HTTP_MAX_RESPONSE_HEAD_SIZE] = unsafe { std::mem::transmute(buf) };
+        let mut buf = Box::new(buf);
+      } else {
+        // Safety: we only read the initialized part of the buf
+        let buf = unsafe { assume_init_slice(&mut buf) };
+      }  
+    };
 
     let mut filled_len = 0;
 
     'read: loop {
 
       #[cfg(feature = "monoio")]
-      let n = match stream.read(buf).await {
-        (Ok(n), nbuf) => {
-          buf = nbuf;
+      let n = match stream.read(unsafe { buf.slice_mut_unchecked(filled_len..) }).await {
+        (Ok(n), b) => {
+          buf = b.into_inner();
           n
-        }
+        },
         (Err(_), _) => return err!(Read),
       };
 
       #[cfg(not(feature = "monoio"))]
       // Safety: filled_len can never be greater than buf.len()
       let n = match stream.read(unsafe { buf.get_unchecked_mut(filled_len..) }).await {
-        Ok(n) => {
-          if n == 0 {
-            return err!(Read)
-          } 
-          n
-        }
+        Ok(n) => n,
         Err(_) => return err!(Read),
       };
-      
+        
+      if n == 0 {
+        return err!(Read)
+      }
+
       filled_len += n;
       
       // we override the buf here to avoid use it after this line
@@ -358,7 +358,7 @@ async fn read_exact_and_dispose<R: Read + Unpin>(r: &mut R, mut take: u64) -> Re
 
     #[cfg(not(feature = "monoio"))]
     {
-      let slice = unsafe { &mut SHARED_BUF[..max] };
+      let slice = unsafe { &mut SHARED_BUF[..n] };
       r.read_exact(slice).await?;
     };
 
@@ -383,11 +383,11 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
 
       #[cfg(feature = "monoio")]
       match stream.read(buf).await {
-        (Ok(n), nbuf) => {
+        (Ok(n), b) => {
           if n == 0 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
           }
-          buf = nbuf;
+          buf = b;
         }
 
         (Err(e), _) => {
@@ -463,8 +463,8 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
         
         #[cfg(feature = "monoio")]
         let n = {
-          let (r, nbuf) = stream.read(buf).await;
-          buf = nbuf;
+          let (r, b) = stream.read(buf).await;
+          buf = b;
           r?
         };
 

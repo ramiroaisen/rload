@@ -53,7 +53,7 @@ impl Default for ThreadResult {
 
 
 #[cfg(feature = "monoio")]
-#[monoio::main(timer = true)]
+#[monoio::main(driver = "legacy", timer = true)]
 pub async fn thread(
   config: RunConfig<'static>,
   start: watch::Receiver<()>,

@@ -1,5 +1,5 @@
-use std::{net::SocketAddr, time::Duration};
 use human_bytes::human_bytes;
+use std::{net::SocketAddr, time::Duration};
 use url::Url;
 
 use crate::fmt::format_duration;
@@ -27,7 +27,7 @@ pub struct Report {
   pub ok: u64,
   pub read: u64,
   pub write: u64,
-  
+
   #[cfg(feature = "error-detail")]
   pub err: Errors,
 
@@ -36,7 +36,7 @@ pub struct Report {
 
   #[cfg(feature = "status-detail")]
   pub statuses: Vec<(u16, u64)>,
-  
+
   #[cfg(not(feature = "status-detail"))]
   pub not_ok_status: u64,
 
@@ -49,11 +49,13 @@ impl std::fmt::Display for Report {
     let secs = self.elapsed.as_secs_f64();
 
     if self.ok == 0 {
-      write!(f,
-        "no data was collected, all requests failed or didn't complete"
-,      )?;
+      write!(
+        f,
+        "no data was collected, all requests failed or didn't complete",
+      )?;
     } else {
-      write!(f,
+      write!(
+        f,
         " {} requests in {}, {} read, {} write",
         self.ok,
         format_duration(self.elapsed),
@@ -68,7 +70,12 @@ impl std::fmt::Display for Report {
     writeln!(f, "address:      {}", self.address)?;
     writeln!(f, "http-version: {}", self.http_version)?;
     writeln!(f, "method:       {}", self.method)?;
-    if self.body_len != 0 || !matches!(self.method.as_ref(), "GET" | "HEAD" | "DELETE" | "OPTIONS" | "TRACE") { 
+    if self.body_len != 0
+      || !matches!(
+        self.method.as_ref(),
+        "GET" | "HEAD" | "DELETE" | "OPTIONS" | "TRACE"
+      )
+    {
       writeln!(f, "body:         {}", human_bytes(self.body_len as f64))?;
     }
     writeln!(
@@ -92,6 +99,8 @@ impl std::fmt::Display for Report {
     if let Some(timeout) = self.timeout {
       writeln!(f, "timeout:      {}", crate::fmt::format_duration(timeout))?;
     }
+
+    writeln!(f, "runtime:      {}", crate::rt::NAME)?;
 
     #[cfg(feature = "latency")]
     {
@@ -122,39 +131,27 @@ impl std::fmt::Display for Report {
       }
     }
 
-
     writeln!(f)?;
     writeln!(f, "==========| Result |=========")?;
     writeln!(
       f,
-      "elapsed:               {}",
+      "elapsed:            {}",
       crate::fmt::format_duration(self.elapsed)
     )?;
-    writeln!(f, "fulfilled:             {}", self.ok)?;
-    
+    writeln!(f, "fulfilled:          {}", self.ok)?;
+
     #[cfg(feature = "error-detail")]
     {
-      let total= self.err.total();
-      let Errors {
-        connect,
-        tls_handshake,
-        read_body,
-        read,
-        write,
-        parse,
-        h2_handshake,
-        h2_ready,
-        h2_send,
-        h2_recv,
-        h2_body,
-        timeout,
-      } = self.err;
-      
+      let total = self.err.total();
       if total == 0 {
         writeln!(f, "errors:             0")?;
       } else {
-        writeln!(f, "- Errors")?;
-        fn err(f: &mut std::fmt::Formatter<'_>, name: impl std::fmt::Display, count: u64) -> std::fmt::Result { 
+        writeln!(f, "- errors")?;
+        fn err(
+          f: &mut std::fmt::Formatter<'_>,
+          name: impl std::fmt::Display,
+          count: u64,
+        ) -> std::fmt::Result {
           if count != 0 {
             writeln!(f, "  · {: <15}{}", format!("{}:", name), count)?;
           }
@@ -163,27 +160,22 @@ impl std::fmt::Display for Report {
         }
 
         err(f, "total", total)?;
-        err(f, ErrorKind::Connect, connect)?;
-        err(f, ErrorKind::TlsHandshake, tls_handshake)?;
-        err(f, ErrorKind::ReadBody, read_body)?;
-        err(f, ErrorKind::Read, read)?;
-        err(f, ErrorKind::Write, write)?;
-        err(f, ErrorKind::Parse, parse)?;
-        err(f, ErrorKind::H2Handshake, h2_handshake)?;
-        err(f, ErrorKind::H2Ready, h2_ready)?;
-        err(f, ErrorKind::H2Send, h2_send)?;
-        err(f, ErrorKind::H2Recv, h2_recv)?;
-        err(f, ErrorKind::H2Body, h2_body)?;
-        err(f, ErrorKind::Timeout, timeout)?;
+        
+        use strum::IntoEnumIterator;
+        for kind in ErrorKind::iter() {
+          let n = self.err.get(kind);
+          if n != 0 {
+            err(f, kind, n)?;
+          }
+        }
       }
     }
 
     #[cfg(not(feature = "error-detail"))]
     {
-      println!("errors:             {}", self.err_count);  
+      println!("errors:             {}", self.err_count);
     }
 
-  
     #[cfg(feature = "status-detail")]
     {
       let has_non_200 = self.statuses.iter().any(|(status, _)| *status != 200);
