@@ -1,6 +1,8 @@
+const MAX: u16 = 999;
+
 // a status-codes counter for status codes in the ranges of 0..=999
 #[derive(Debug, Clone)]
-pub struct Statuses([u64; 1000]);
+pub struct Statuses([u64; MAX as usize + 1]);
 
 #[derive(Debug)]
 pub struct StatusOutOfRangeError {
@@ -25,7 +27,10 @@ impl Statuses {
   /// the caller must ensure that the status is <= 999
   #[inline(always)]
   pub unsafe fn record_unchecked(&mut self, status: u16) {
-    *self.0.get_unchecked_mut(status as usize) += 1;
+    debug_assert!(status <= 999);
+    unsafe {
+      *self.0.get_unchecked_mut(status as usize) += 1;
+    }
   }
 
 
@@ -42,10 +47,10 @@ impl Statuses {
 
   #[inline(always)]
   pub fn join(&mut self, other: Self) {
-    for (i, v) in other.0.iter().enumerate() {
+    for (i, v) in other.0.into_iter().enumerate() {
       // Safety: the length of both arrays is always the same
       unsafe {
-        *self.0.get_unchecked_mut(i) += *v;
+        *self.0.get_unchecked_mut(i) += v;
       }
     }
   }

@@ -1,5 +1,5 @@
 
-use strum::{EnumCount, EnumIter};
+use strum::{EnumCount, EnumIter, IntoEnumIterator};
 #[derive(Debug, Clone, Copy)]
 pub struct Errors([u64; ErrorKind::COUNT]);
 
@@ -61,6 +61,18 @@ impl Errors {
     unsafe {
       *self.0.get_unchecked_mut(index) += 1;
     }
+  }
+
+  /// An iterator over the non-zero-count pairs of (error: ErrorKind, count: u64)
+  pub fn iter(&self) -> impl Iterator<Item = (ErrorKind, u64)> + '_ {
+    ErrorKind::iter().filter_map(|kind| {
+      let count = self.get(kind);
+      if count == 0 {
+        None
+      } else {
+        Some((kind, count))
+      }
+    })
   }
 
   #[inline(always)]

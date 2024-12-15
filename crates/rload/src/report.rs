@@ -160,13 +160,8 @@ impl std::fmt::Display for Report {
         }
 
         err(f, "total", total)?;
-        
-        use strum::IntoEnumIterator;
-        for kind in ErrorKind::iter() {
-          let n = self.err.get(kind);
-          if n != 0 {
-            err(f, kind, n)?;
-          }
+        for (kind, count) in self.err.iter() {
+          err(f, kind, count)?;
         }
       }
     }
