@@ -1,5 +1,4 @@
 use std::mem::MaybeUninit;
-use bytes::BytesMut;
 use httparse::{parse_chunk_size, Header, Status};
 #[cfg(feature = "monoio")]
 use monoio::buf::IoBufMut;
@@ -17,6 +16,9 @@ const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 128;
 
 /// The maximum headers qty allowed by the h1 parser
 const H1_HTTP_MAX_HEADER_QTY: usize = 128;
+
+// TODO: add const assert H1_CHUNKED_BODY_BUF_SIZE >= H1_HTTP_MAX_RESPONSE_HEAD_SIZE
+const H1_CHUNKED_BODY_BUF_SIZE: usize = 1024 * 256;
 
 const CONNECTION: &str = "connection";
 const CLOSE: &str = "close";
@@ -77,6 +79,7 @@ pub async fn send_request<S: Read + Write + Unpin>(
         
     cfg_if::cfg_if! {
       if #[cfg(feature = "monoio")] {
+        // Safety: we only read the initialized part of the buf
         let buf: [u8; H1_HTTP_MAX_RESPONSE_HEAD_SIZE] = unsafe { std::mem::transmute(buf) };
         let mut buf = Box::new(buf);
       } else {
@@ -86,6 +89,18 @@ pub async fn send_request<S: Read + Write + Unpin>(
     };
 
     let mut filled_len = 0;
+
+    let mut config = httparse::ParserConfig::default();
+        
+    // we set the most permissive config
+    config.allow_spaces_after_header_name_in_responses(true);
+    config.allow_obsolete_multiline_headers_in_responses(true);
+    config.allow_space_before_first_header_name(true);
+    config.ignore_invalid_headers_in_responses(true);
+    
+    // this are for request only
+    // config.ignore_invalid_headers_in_requests(true)
+    // config.allow_multiple_spaces_in_request_line_delimiters(true)
 
     'read: loop {
 
@@ -113,22 +128,10 @@ pub async fn send_request<S: Read + Write + Unpin>(
       
       // we override the buf here to avoid use it after this line
       // now the buf is only the filled part
-      let buf = &buf[..filled_len];
+      let buf = unsafe { buf.get_unchecked(..filled_len) };
       // we gain a little performance here, httparse will take care of initializing the headers
       let mut headers = [MaybeUninit::<Header<'_>>::uninit(); H1_HTTP_MAX_HEADER_QTY];
       let mut res = httparse::Response::new(&mut []);
-
-      let mut config = httparse::ParserConfig::default();
-        
-      // we set the most permissive config
-      config.allow_spaces_after_header_name_in_responses(true);
-      config.allow_obsolete_multiline_headers_in_responses(true);
-      config.allow_space_before_first_header_name(true);
-      config.ignore_invalid_headers_in_responses(true);
-      
-      // this are for request only
-      // config.ignore_invalid_headers_in_requests(true)
-      // config.allow_multiple_spaces_in_request_line_delimiters(true)
 
       let head_len = match config.parse_response_with_uninit_headers(&mut res, buf, &mut headers) {
         Ok(httparse::Status::Complete(n)) => n,
@@ -146,7 +149,7 @@ pub async fn send_request<S: Read + Write + Unpin>(
         unsafe { statuses.record_unchecked(status) };
         
         #[cfg(not(feature = "status-detail"))]
-        if !matches!(status, 200..=399) {
+        if status < 200 || status > 399 {
           *not_ok_status += 1;
         }
       }
@@ -346,24 +349,38 @@ pub async fn read_to_end<R: Read + Unpin>(r: &mut R) -> Result<(), std::io::Erro
 
 #[inline(always)]
 async fn read_exact_and_dispose<R: Read + Unpin>(r: &mut R, mut take: u64) -> Result<(), std::io::Error> {
-  while take != 0 {
-    
-    let n = take.min(SHARED_BUF_LEN as u64) as usize;
-
+  while take > SHARED_BUF_LEN as u64 {
     #[cfg(feature = "monoio")]
-    {
-      let slice = unsafe { SHARED_BUF.slice_mut_unchecked(..n) };
-      r.read_exact(slice).await.0?;
+    let n = match r.read(unsafe { SHARED_BUF.slice_mut_unchecked(..) }).await {
+      (Ok(n), _) => n,
+      (Err(e), _) => return Err(e),
     };
 
     #[cfg(not(feature = "monoio"))]
-    {
-      let slice = unsafe { &mut SHARED_BUF[..n] };
-      r.read_exact(slice).await?;
+    let n = match r.read(unsafe { &mut SHARED_BUF[..] }).await {
+      Ok(n) => n,
+      Err(e) => return Err(e),
     };
 
-    take -= n as u64
+    take -= n as u64;
   }
+
+  // this will never happen
+  // if take == 0 {
+  //   return Ok(())
+  // }
+    
+  let n = take as usize;
+      
+  #[cfg(feature = "monoio")]
+  {
+    r.read_exact(unsafe { SHARED_BUF.slice_mut_unchecked(..n) }).await.0?;
+  };
+
+  #[cfg(not(feature = "monoio"))]
+  {
+    r.read_exact(unsafe { &mut SHARED_BUF[..n] }).await?;
+  };
 
   Ok(())
 }
@@ -371,7 +388,26 @@ async fn read_exact_and_dispose<R: Read + Unpin>(r: &mut R, mut take: u64) -> Re
 #[inline(always)]
 pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]) -> Result<(), std::io::Error> {
   
-  let mut buf = BytesMut::from(readed);
+  // Safety: we only read initialized part of the buf between start..end
+  let mut buf: [u8; H1_CHUNKED_BODY_BUF_SIZE] = unsafe { std::mem::transmute([MaybeUninit::<u8>::uninit(); H1_CHUNKED_BODY_BUF_SIZE]) };
+  if !readed.is_empty() {
+    unsafe { buf.get_unchecked_mut(..readed.len()).copy_from_slice(readed) };
+  }
+
+  let mut start = 0;
+  let mut end = readed.len();
+
+  macro_rules! len {
+    () => { end - start } 
+  }
+
+  macro_rules! rem {
+    () => { buf.len() - end }
+  }
+
+  #[cfg(feature = "monoio")]
+  let mut buf = Box::new(buf);
+
   let mut first = true;
 
   'read: loop {
@@ -379,41 +415,54 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
     const MIN_CHUNK_HEAD_LEN: usize = 3; // this account for one digit and \r\n. Example: 0\r\n
     
     #[allow(clippy::bool_comparison)]
-    if first == false || buf.len() < MIN_CHUNK_HEAD_LEN { 
+    if first == false || len!() < MIN_CHUNK_HEAD_LEN { 
+
+      // if we are close to the end we rotate the buffer, placing the filled part at the start
+      if start != 0 && rem!() < 4 * 1024 {
+        for (target, src) in (start..end).enumerate() {
+          unsafe { *buf.get_unchecked_mut(target) = *buf.get_unchecked(src) }
+        }
+        end -= start;
+        start = 0;
+      }
 
       #[cfg(feature = "monoio")]
-      match stream.read(buf).await {
+      let n = match stream.read(unsafe { buf.slice_mut_unchecked(end..) }).await {
         (Ok(n), b) => {
           if n == 0 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
           }
-          buf = b;
+          buf = b.into_inner();
+          n
         }
 
         (Err(e), _) => {
           return Err(e);
         }
-      }
+      };
 
       #[cfg(not(feature = "monoio"))]
-      match stream.read_buf(&mut buf).await {
+      let n = match stream.read(unsafe { buf.get_unchecked_mut(end..) }).await {
         Ok(n) => {
           if n == 0 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
           }
+          n
         }
 
         Err(e) => {
           return Err(e);
         }
-      }
+      };
+
+      end += n;
     }
 
     first = false;
 
     'parse: loop {
 
-      let (consumed, size) = match parse_chunk_size(&buf) {
+      let (consumed, size) = match parse_chunk_size(unsafe { buf.get_unchecked(start..end) }) {
         // correct parsing of chunk size
         Ok(Status::Complete((consumed, size))) => (consumed, size),
 
@@ -433,12 +482,12 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
       if size == 0 {
         let expected = consumed + 2; // +2 for the \r\n
         
-        if buf.len() == expected {
+        if len!() == expected {
           return Ok(())
         } 
         
-        if buf.len() < expected {
-          let take = expected - buf.len();
+        if len!() < expected {
+          let take = expected - len!();
           read_exact_and_dispose( stream, take as u64).await?;
           return Ok(())
         }
@@ -447,20 +496,25 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
       }
 
       // not last chunk
-      let until = consumed as u64 + size + 2; // +2 is for the \r\n at the end of the chunk
+      let mut until = consumed as u64 + size + 2; // +2 is for the \r\n at the end of the chunk
 
       'read_chunk: loop { 
 
-        if buf.len() as u64 == until {
-          buf.clear();
+        if len!() as u64 == until {
+          start = 0;
+          end = 0;
           continue 'read;
         } 
         
-        if buf.len() as u64 > until {
-          let _ = buf.split_to(until as usize);
+        if len!() as u64 > until {
+          start += until as usize;
           continue 'parse;
         }
         
+        until -= len!() as u64;
+        // start = 0
+        // end = 0
+
         #[cfg(feature = "monoio")]
         let n = {
           let (r, b) = stream.read(buf).await;
@@ -469,11 +523,14 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
         };
 
         #[cfg(not(feature = "monoio"))]
-        let n = stream.read_buf(&mut buf).await?;
+        let n = stream.read(&mut buf).await?;
 
         if n == 0 {
           return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
+
+        start = 0;
+        end = n;
 
         continue 'read_chunk;
       }
