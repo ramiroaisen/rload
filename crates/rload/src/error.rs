@@ -7,17 +7,17 @@ pub struct Errors([u64; ErrorKind::COUNT]);
 #[derive(Debug, Clone, Copy, EnumIter, EnumCount)]
 pub enum ErrorKind {
   Connect = 0,
-  TlsHandshake = 1,
-  Read = 2,
-  ReadBody = 3,
-  Write = 4,
-  Parse = 5,
-  Timeout = 6,
-  H2Handshake = 7,
-  H2Ready = 8,
-  H2Send = 9,
-  H2Recv = 10,
-  H2Body = 11,
+  TlsHandshake,
+  Read,
+  ReadBody,
+  Write,
+  Parse,
+  Timeout,
+  H2Handshake,
+  H2Ready,
+  H2Send,
+  H2Recv,
+  H2Body,
 }
 
 impl std::fmt::Display for ErrorKind {
@@ -57,7 +57,7 @@ impl Errors {
   #[inline(always)]
   pub fn record(&mut self, item: ErrorKind) {
     let index = item as usize;
-    debug_assert!(index < self.0.len());
+    // Safety: ErrorKind::COUNT is the length of the array
     unsafe {
       *self.0.get_unchecked_mut(index) += 1;
     }
@@ -66,10 +66,9 @@ impl Errors {
   #[inline(always)]
   pub fn join(&mut self, other: Self) {
     for (i, item) in other.0.into_iter().enumerate() {
-      let index = i;
-      debug_assert!(index < self.0.len());
+      // Safety: both arrays are the same length
       unsafe {
-        *self.0.get_unchecked_mut(index) += item;
+        *self.0.get_unchecked_mut(i) += item;
       }
     }
   }
