@@ -219,11 +219,11 @@ test-all-feat *args:
 
 ab *args:
   #!/usr/bin/env -S parallel --shebang --ungroup
-  ./target/release/a {{args}} | sed "s/^/A | /"
-  ./target/release/b {{args}} | sed "s/^/B | /"
+  ./target/release/a {{args}}
+  ./target/release/b {{args}}
 
 
 internal-bench *args:
   #!/usr/bin/env -S parallel --shebang --ungroup
-  wrk {{args}}   | sed "s/^/WRK   | /"
-  rload {{args}} | sed "s/^/RLOAD | /"
+  wrk {{args}}   | sed "s/^/WRK | /" | cat
+  rload {{args}} | cat
