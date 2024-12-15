@@ -38,7 +38,9 @@ impl Statuses {
   #[inline(always)]
   pub fn record(&mut self, status: u16) -> Result<(), StatusOutOfRangeError> {
     if status <= 999 {
-      unsafe { self.record_unchecked(status) };
+      unsafe {
+        *self.0.get_unchecked_mut(status as usize) += 1;
+      }
       Ok(())
     } else {
       Err(StatusOutOfRangeError { status })

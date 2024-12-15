@@ -134,7 +134,8 @@ pub async fn thread_inner(
                       if let Some(start) = start {
                         let elapsed = start.elapsed().as_nanos();
                         unsafe {
-                          result.get_mut_unsafe().hdr.record(elapsed as u64).unwrap();
+                          // this will not fail, by ignoring the error instead of unwrapping we remove the branching from the code 
+                          let _ = result.get_mut_unsafe().hdr.record(elapsed as u64);
                         }
                       }
                     }
@@ -222,7 +223,8 @@ pub async fn thread_inner(
                       if let Some(start) = start {
                         let elapsed = start.elapsed().as_nanos();
                         unsafe {
-                          result.get_mut_unsafe().hdr.record(elapsed as u64).unwrap();
+                          // this will not fail, by ignoring the error instead of unwrapping we remove the branching from the code
+                          let _ = result.get_mut_unsafe().hdr.record(elapsed as u64);
                         }
                       }
                     }

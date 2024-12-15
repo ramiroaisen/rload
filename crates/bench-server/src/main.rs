@@ -123,8 +123,6 @@ async fn echo(req: axum::extract::Request) -> Response {
 
 async fn random_status() -> Response {
   let status = thread_rng().gen_range(100..=999);
-
-  // let status = StatusCode::from_u16(RANDOM_STATUS.load(Ordering::Acquire)).unwrap();
   let mut res = Response::new(Body::empty());
   *res.status_mut() = StatusCode::from_u16(status).unwrap();
   res

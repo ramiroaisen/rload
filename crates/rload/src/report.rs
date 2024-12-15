@@ -5,7 +5,7 @@ use url::Url;
 use crate::fmt::format_duration;
 
 #[cfg(feature = "error-detail")]
-use crate::error::{ErrorKind, Errors};
+use crate::error::Errors;
 
 #[derive(Debug, Clone)]
 pub struct Report {
