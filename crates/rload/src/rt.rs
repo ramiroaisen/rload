@@ -10,6 +10,8 @@ cfg_if::cfg_if! {
     pub use signalfut::ctrl_c;
     #[cfg(feature = "h2")]
     pub use monoio_http::h2;
+    #[cfg(feature = "tls")]
+    pub use monoio_rustls::TlsConnector;
   } else {
     pub const NAME: &str = "tokio";
     pub use tokio::spawn;
@@ -22,5 +24,7 @@ cfg_if::cfg_if! {
     pub use tokio::sync;
     #[cfg(feature = "h2")]
     pub use h2;
+    #[cfg(feature = "tls")]
+    pub use tokio_rustls::TlsConnector;
   }
 }

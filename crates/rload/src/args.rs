@@ -123,10 +123,7 @@ pub struct Args {
 #[cfg(feature = "tls")]
 #[derive(Clone)]
 pub struct Tls<'a> {
-  #[cfg(feature = "monoio")]
-  pub connector: monoio_rustls::TlsConnector,
-  #[cfg(not(feature = "monoio"))]
-  pub connector: tokio_rustls::TlsConnector,
+  pub connector: crate::rt::TlsConnector,
   pub server_name: ServerName<'a>,
 }
 
@@ -239,11 +236,7 @@ impl RunConfig<'static> {
           }
         }
 
-        #[cfg(feature = "monoio")]
-        let connector = monoio_rustls::TlsConnector::from(Arc::new(client_config));
-
-        #[cfg(not(feature = "monoio"))]
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+        let connector = crate::rt::TlsConnector::from(Arc::new(client_config));
         let server_name = ServerName::try_from(host).context("invalid server name in url host")?;
 
         let tls: &'static _ = Box::leak(Box::new(Tls {
