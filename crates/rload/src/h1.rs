@@ -17,8 +17,8 @@ const H1_HTTP_MAX_RESPONSE_HEAD_SIZE: usize = 1024 * 128;
 /// The maximum headers qty allowed by the h1 parser
 const H1_HTTP_MAX_HEADER_QTY: usize = 128;
 
-// TODO: add const assert H1_CHUNKED_BODY_BUF_SIZE >= H1_HTTP_MAX_RESPONSE_HEAD_SIZE
 const H1_CHUNKED_BODY_BUF_SIZE: usize = 1024 * 256;
+static_assertions::const_assert!(H1_CHUNKED_BODY_BUF_SIZE >= H1_HTTP_MAX_RESPONSE_HEAD_SIZE);
 
 const CONNECTION: &str = "connection";
 const CLOSE: &str = "close";
@@ -419,9 +419,13 @@ pub async fn consume_chunked_body<R: Read + Unpin>(stream: &mut R, readed: &[u8]
 
       // if we are close to the end we rotate the buffer, placing the filled part at the start
       if start != 0 && rem!() < 4 * 1024 {
-        for (target, src) in (start..end).enumerate() {
-          unsafe { *buf.get_unchecked_mut(target) = *buf.get_unchecked(src) }
-        }
+        // for (target, src) in (start..end).enumerate() {
+        //   unsafe { *buf.get_unchecked_mut(target) = *buf.get_unchecked(src) }
+        // }
+        buf.copy_within(
+          start..end,
+          0
+        );
         end -= start;
         start = 0;
       }
