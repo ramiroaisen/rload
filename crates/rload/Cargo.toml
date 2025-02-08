@@ -5,6 +5,17 @@ edition = "2021"
 
 default-run = "rload"
 
+[profile.release]
+opt-level = 3
+debug = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+strip = "symbols"
+incremental = false
+debug-assertions = false
+
 [features]
 # all this features showed practically no performance degradation being enabled
 default = [ "full" ]

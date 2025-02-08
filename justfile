@@ -227,3 +227,7 @@ internal-bench *args:
   #!/usr/bin/env -S parallel --shebang --ungroup
   wrk {{args}}   | sed "s/^/WRK | /" | cat
   rload {{args}} | cat
+
+release:
+  cross build --release --target x86_64-unknown-linux-gnu
+  cp target/x86_64-unknown-linux-gnu/release/rload release/rload
