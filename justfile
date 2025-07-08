@@ -4,6 +4,9 @@ rload *args:
 build *args: 
   cargo build --release --bin rload {{args}} 
 
+build-gnu *args:
+  cargo build --release --target x86_64-unknown-linux-gnu --bin rload
+
 server *args:
   cargo run --release --bin bench-server -- {{args}}
 
@@ -224,11 +227,11 @@ ab *args:
   ./target/release/a {{args}}
   ./target/release/b {{args}}
 
-
 internal-bench *args:
   #!/usr/bin/env -S parallel --shebang --ungroup
-  wrk {{args}}                   | sed "s/^/WRK | /" | cat
-  ./target/release/rload {{args}} | cat
+  # wrk {{args}}                                               1> >(awk '{ print "WRK", $0 }')
+  ./target/x86_64-unknown-linux-gnu/release/rload {{args}}   2> >(awk '{ print "GNU", $0 }')
+  ./target/x86_64-unknown-linux-musl/release/rload {{args}}  2> >(awk '{ print "MUS", $0 }')  
 
 release:
   cross build --release --target x86_64-unknown-linux-gnu
