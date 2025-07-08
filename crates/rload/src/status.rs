@@ -1,8 +1,9 @@
 const MAX: u16 = 999;
+const LEN: usize = MAX as usize + 1;
 
 // a status-codes counter for status codes in the ranges of 0..=999
 #[derive(Debug, Clone)]
-pub struct Statuses([u64; MAX as usize + 1]);
+pub struct Statuses([u64; LEN]);
 
 #[derive(Debug)]
 pub struct StatusOutOfRangeError {
@@ -20,14 +21,14 @@ impl std::fmt::Display for StatusOutOfRangeError {
 impl Statuses {
   #[inline(always)]
   pub fn new() -> Self {
-    Self([0; 1000])
+    Self([0; LEN])
   }
 
   /// # Safety
   /// the caller must ensure that the status is <= 999
   #[inline(always)]
   pub unsafe fn record_unchecked(&mut self, status: u16) {
-    debug_assert!(status <= 999);
+    debug_assert!(status <= MAX);
     unsafe {
       *self.0.get_unchecked_mut(status as usize) += 1;
     }
@@ -37,9 +38,9 @@ impl Statuses {
   /// Errors if the status is greater than 999
   #[inline(always)]
   pub fn record(&mut self, status: u16) -> Result<(), StatusOutOfRangeError> {
-    if status <= 999 {
+    if status <= MAX {
       unsafe {
-        *self.0.get_unchecked_mut(status as usize) += 1;
+        self.record_unchecked(status);
       }
       Ok(())
     } else {
