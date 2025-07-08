@@ -9,8 +9,10 @@ async-stream = "0.3.6"
 axum = { version = "0.7.9", features = ["macros"] }
 clap = { version = "4.5.23", features = ["derive", "env"] }
 hyper = { version = "1.5.1", features = ["full"] }
+mimalloc = "0.1.47"
 num_cpus = "1.16.0"
 rand = "0.8.5"
 serde = { version = "1.0.216", features = ["derive"] }
+tikv-jemallocator = "0.6.0"
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["full"] }

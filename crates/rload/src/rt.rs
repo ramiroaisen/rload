@@ -21,7 +21,6 @@ cfg_if::cfg_if! {
     pub use tokio::io::{AsyncWrite as Write, AsyncWriteExt as WriteExt};
     pub use tokio::net::TcpStream;
     pub use tokio::signal::ctrl_c;
-    pub use tokio::sync;
     #[cfg(feature = "h2")]
     pub use h2;
     #[cfg(feature = "tls")]

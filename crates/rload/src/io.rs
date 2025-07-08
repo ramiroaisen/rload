@@ -27,13 +27,12 @@ impl<S: tokio::io::AsyncRead> tokio::io::AsyncRead for CounterStream<'_, S> {
     cx: &mut Context<'_>,
     buf: &mut tokio::io::ReadBuf<'_>,
   ) -> Poll<std::io::Result<()>> {
-    let mut me = self.project();
-    match me.inner.as_mut().poll_read(cx, buf) {
+    let me = self.project();
+    match me.inner.poll_read(cx, buf) {
       Poll::Pending => Poll::Pending,
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)), 
       Poll::Ready(Ok(())) => {
-        // unsafe { *me.read.get_mut_unsafe() += buf.filled().len() as u64 };
-        **me.read += buf.filled().len()as u64;
+        **me.read += buf.filled().len() as u64;
         Poll::Ready(Ok(()))
       }
     }
@@ -47,8 +46,8 @@ impl<S: tokio::io::AsyncWrite> tokio::io::AsyncWrite for CounterStream<'_, S> {
     cx: &mut Context<'_>,
     buf: &[u8],
   ) -> Poll<std::io::Result<usize>> {
-    let mut me = self.project();
-    match me.inner.as_mut().poll_write(cx, buf) {
+    let me = self.project();
+    match me.inner.poll_write(cx, buf) {
       Poll::Pending => Poll::Pending,
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Ready(Ok(n)) => {
@@ -65,8 +64,8 @@ impl<S: tokio::io::AsyncWrite> tokio::io::AsyncWrite for CounterStream<'_, S> {
     cx: &mut Context<'_>,
     bufs: &[std::io::IoSlice<'_>],
   ) -> Poll<std::io::Result<usize>> {
-    let mut me = self.project();
-    match me.inner.as_mut().poll_write_vectored(cx, bufs) {
+    let me = self.project();
+    match me.inner.poll_write_vectored(cx, bufs) {
       Poll::Pending => Poll::Pending,
       Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
       Poll::Ready(Ok(n)) => {
@@ -79,14 +78,12 @@ impl<S: tokio::io::AsyncWrite> tokio::io::AsyncWrite for CounterStream<'_, S> {
 
   #[inline(always)]
   fn poll_flush(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-    let mut me = self.project();
-    me.inner.as_mut().poll_flush(cx)
+    self.project().inner.poll_flush(cx)
   }
 
   #[inline(always)]
   fn poll_shutdown(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-    let mut me = self.project();
-    me.inner.as_mut().poll_shutdown(cx)
+    self.project().inner.poll_shutdown(cx)
   }
 
   #[inline(always)]

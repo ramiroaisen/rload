@@ -5,17 +5,6 @@ edition = "2021"
 
 default-run = "rload"
 
-[profile.release]
-opt-level = 3
-debug = false
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-overflow-checks = false
-strip = "symbols"
-incremental = false
-debug-assertions = false
-
 [features]
 # all this features showed practically no performance degradation being enabled
 default = [ "full" ]
@@ -57,6 +46,8 @@ numfmt = "1.1.1"
 shadow-rs = { version = "0.36.0", features = ["cargo_metadata", "document-features", "metadata"] }
 strum = { version = "0.26.3", features = ["derive"] }
 static_assertions = "1.1.0"
+tikv-jemallocator = "0.6.0"
+mimalloc = "0.1.47"
 
 [build-dependencies]
 shadow-rs = { version = "0.36.0", features = ["cargo_metadata", "document-features", "metadata"] }

@@ -11,6 +11,9 @@ use std::{
   str::FromStr,
 };
 
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Debug, clap::Parser)]
 struct Args {
   #[clap(short, long, default_value_t = num_cpus::get(), env = "THREADS")]

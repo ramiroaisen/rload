@@ -6,3 +6,14 @@ members = [
   "crates/rload",
   "crates/bench-server",
 ]
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+strip = "symbols"
+incremental = false
+debug-assertions = false

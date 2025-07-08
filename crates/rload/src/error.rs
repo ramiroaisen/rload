@@ -48,7 +48,7 @@ impl Errors {
   #[inline(always)]
   pub fn get(&self, item: ErrorKind) -> u64 {
     let index = item as usize;
-    debug_assert!(index < self.0.len());
+    // Safety: ErrorKind::COUNT is the length of the array
     unsafe {
       *self.0.get_unchecked(index)
     }
