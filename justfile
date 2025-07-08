@@ -13,7 +13,9 @@ build-server *args:
 build-all *args: 
   cargo build --release {{args}} 
 
-all-feat cmd *args: 
+all-feat cmd *args:
+  cargo {{cmd}} -p rload --no-default-features --features=h1,jemalloc {{args}}
+  cargo {{cmd}} -p rload --no-default-features --features=h1,mimalloc {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1 {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h2 {{args}}
   cargo {{cmd}} -p rload --no-default-features --features=h1,h2 {{args}}
