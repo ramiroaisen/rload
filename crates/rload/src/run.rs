@@ -148,14 +148,16 @@ pub async fn thread_inner(
                   }
                   #[allow(unused)]
                   Err(e) => {
-                    #[cfg(feature = "error-detail")]
-                    unsafe {
-                      result.get_mut_unsafe().err.record(e);
-                    }
-
-                    #[cfg(not(feature = "error-detail"))]
-                    unsafe {
-                      result.get_mut_unsafe().err_count += 1;
+                    cfg_if::cfg_if! {
+                      if #[cfg(feature = "error-detail")] {
+                        unsafe {
+                          result.get_mut_unsafe().err.record(e);
+                        }
+                      } else {
+                        unsafe {
+                          result.get_mut_unsafe().err_count += 1;
+                        }
+                      }
                     }
 
                     continue 'conn;
@@ -171,14 +173,16 @@ pub async fn thread_inner(
               let (mut h2, conn) = match crate::rt::h2::client::handshake($stream).await {
                 Ok(pair) => pair,
                 Err(_) => {
-                  #[cfg(feature = "error-detail")]
-                  unsafe {
-                    result.get_mut_unsafe().err.record(ErrorKind::H2Handshake);
-                  }
-
-                  #[cfg(not(feature = "error-detail"))]
-                  unsafe {
-                    result.get_mut_unsafe().err_count += 1;
+                  cfg_if::cfg_if! {
+                    if #[cfg(feature = "error-detail")] {
+                      unsafe {
+                        result.get_mut_unsafe().err.record(ErrorKind::H2Handshake);
+                      }
+                    } else {
+                      unsafe {
+                        result.get_mut_unsafe().err_count += 1;
+                      }
+                    }
                   }
 
                   continue 'conn;
@@ -238,14 +242,16 @@ pub async fn thread_inner(
 
                   #[allow(unused)]
                   Err(e) => {
-                    #[cfg(feature = "error-detail")]
-                    unsafe {
-                      result.get_mut_unsafe().err.record(e);
-                    }
-
-                    #[cfg(not(feature = "error-detail"))]
-                    unsafe {
-                      result.get_mut_unsafe().err_count += 1;
+                    cfg_if::cfg_if! {
+                      if #[cfg(feature = "error-detail")] {
+                        unsafe {
+                          result.get_mut_unsafe().err.record(e);
+                        }
+                      } else {
+                        unsafe {
+                          result.get_mut_unsafe().err_count += 1;
+                        }
+                      }
                     }
 
                     continue 'conn;
@@ -261,14 +267,16 @@ pub async fn thread_inner(
               match $inner.await {
                 Ok(stream) => stream,
                 Err(_) => {
-                  #[cfg(feature = "error-detail")]
-                  unsafe {
-                    result.get_mut_unsafe().err.record(ErrorKind::$err);
-                  }
-
-                  #[cfg(not(feature = "error-detail"))]
-                  unsafe {
-                    result.get_mut_unsafe().err_count += 1;
+                  cfg_if::cfg_if! {
+                    if #[cfg(feature = "error-detail")] {
+                      unsafe {
+                        result.get_mut_unsafe().err.record(ErrorKind::$err);
+                      }
+                    } else {
+                      unsafe {
+                        result.get_mut_unsafe().err_count += 1;
+                      }
+                    }
                   }
 
                   continue 'conn;
@@ -280,14 +288,16 @@ pub async fn thread_inner(
                 None => match $inner.await {
                   Ok(stream) => stream,
                   Err(_) => {
-                    #[cfg(feature = "error-detail")]
-                    unsafe {
-                      result.get_mut_unsafe().err.record(ErrorKind::$err);
-                    }
-
-                    #[cfg(not(feature = "error-detail"))]
-                    unsafe {
-                      result.get_mut_unsafe().err_count += 1;
+                    cfg_if::cfg_if! {
+                      if #[cfg(feature = "error-detail")] {
+                        unsafe {
+                          result.get_mut_unsafe().err.record(ErrorKind::$err);
+                        }
+                      } else {
+                        unsafe {
+                          result.get_mut_unsafe().err_count += 1;
+                        }
+                      }
                     }
 
                     continue 'conn;
@@ -298,27 +308,31 @@ pub async fn thread_inner(
                   match pingora_timeout::timeout(timeout, $inner).await {
                     Ok(Ok(stream)) => stream,
                     Ok(Err(_)) => {
-                      #[cfg(feature = "error-detail")]
-                      unsafe {
-                        result.get_mut_unsafe().err.record(ErrorKind::$err);
-                      }
-
-                      #[cfg(not(feature = "error-detail"))]
-                      unsafe {
-                        result.get_mut_unsafe().err_count += 1;
+                      cfg_if::cfg_if! {
+                        if #[cfg(feature = "error-detail")] {
+                          unsafe {
+                            result.get_mut_unsafe().err.record(ErrorKind::$err);
+                          }
+                        } else {
+                          unsafe {
+                            result.get_mut_unsafe().err_count += 1;
+                          }
+                        }
                       }
 
                       continue 'conn;
                     }
                     Err(_) => {
-                      #[cfg(feature = "error-detail")]
-                      unsafe {
-                        result.get_mut_unsafe().err.record(ErrorKind::Timeout);
-                      }
-
-                      #[cfg(not(feature = "error-detail"))]
-                      unsafe {
-                        result.get_mut_unsafe().err_count += 1;
+                      cfg_if::cfg_if! {
+                        if #[cfg(feature = "error-detail")] {
+                          unsafe {
+                            result.get_mut_unsafe().err.record(ErrorKind::Timeout);
+                          }
+                        } else {
+                          unsafe {
+                            result.get_mut_unsafe().err_count += 1;
+                          }
+                        }
                       }
 
                       continue 'conn;
