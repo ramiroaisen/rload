@@ -229,10 +229,10 @@ ab *args:
 
 internal-bench *args:
   #!/usr/bin/env -S parallel --shebang --ungroup
-  # wrk {{args}}                                               1> >(awk '{ print "WRK", $0 }')
+  wrk {{args}}                                               1> >(awk '{ print "WRK", $0 }')
   ./target/x86_64-unknown-linux-gnu/release/rload {{args}}   2> >(awk '{ print "GNU", $0 }')
   ./target/x86_64-unknown-linux-musl/release/rload {{args}}  2> >(awk '{ print "MUS", $0 }')  
 
 release:
-  cross build --release --target x86_64-unknown-linux-gnu
+  cargo build --release --target x86_64-unknown-linux-musl
   cp target/x86_64-unknown-linux-gnu/release/rload release/rload

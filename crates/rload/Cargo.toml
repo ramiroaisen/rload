@@ -8,7 +8,7 @@ default-run = "rload"
 [features]
 # all this features showed practically no performance degradation being enabled
 default = [ "full" ]
-full = [ "h1", "h2", "tls", "timeout", "latency", "error-detail", "status-detail", "jamlloc" ]
+full = [ "h1", "h2", "tls", "timeout", "latency", "error-detail", "status-detail", "mimalloc" ]
 h1 = [ "dep:httparse" ]
 h2 = [ "dep:h2" ]
 tls = [ "dep:rustls", "dep:tokio-rustls" ]
